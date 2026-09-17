@@ -1,0 +1,20 @@
+{
+  "name": "mathnotes",
+  "version": "0.1.0",
+  "description": "Offline notatnik matematyczny na tablet graficzny",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "vendor": "node scripts/vendor.js"
+  },
+  "devDependencies": {
+    "electron": "44.4.1",
+    "esbuild": "0.28.2",
+    "lib0": "0.2.117",
+    "y-protocols": "1.0.7",
+    "y-webrtc": "10.3.0",
+    "yjs": "13.6.32"
+  }
+}

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' wss: stun: turn:"
+    />
+    <title>MathNotes</title>
+    <style>
+      :root {
+        --bg: #0b0b0c;
+        --page: #000000;
+        --rail: #131316;
+        --line: #26262b;
+        --ink: #e8e8ea;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--ink);
+        font: 13px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      #app {
+        display: flex;
+        height: 100%;
+      }
+
+      /* Wąski toolbar po lewej — żadnych pasków u góry. */
+      #toolbar {
+        flex: 0 0 52px;
+        background: var(--rail);
+        border-right: 1px solid var(--line);
+      }
+
+      /* Przewijanie tylko w pionie, w nieskończoność w dół. */
+      #surface {
+        flex: 1;
+        overflow-x: hidden;
+        overflow-y: auto;
+        display: flex;
+        justify-content: center;
+      }
+
+      #page {
+        flex: 0 0 auto;
+        min-height: 100%;
+        background: var(--page);
+        touch-action: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <aside id="toolbar"></aside>
+      <div id="surface"><div id="page"></div></div>
+    </div>
+
+    <script src="renderer/core.js"></script>
+    <script src="renderer.js"></script>
+  </body>
+</html>
