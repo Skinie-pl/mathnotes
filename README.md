@@ -38,6 +38,7 @@ Bez bundlera i bez transpilacji w runtime — zwykłe pliki `.js` ładowane prze
 | `renderer/doc.js` | Model dokumentu na Yjs, `Y.UndoManager`, jedyne miejsce mutujące Y.Doc. |
 | `renderer/online.js` | Provider y-webrtc, awareness, obsługa pokoju. |
 | `renderer.js` | Wyłącznie okablowanie DOM/canvas. |
+| `renderer/vendor/collab.bundle.js` | Zvendorowany Yjs + y-webrtc, budowany przez `npm run vendor`. |
 | `index.html` | Nagłówek CSP, ciemna skóra UI. |
 
 ### Zależności i `npm run vendor`
@@ -144,6 +145,30 @@ pociągnięcie to dokładnie jedno undo, także gdy ktoś rysuje bardzo wolno.
 Wczytanie pliku leci osobnym originem i czyści historię: otwarcie notatnika nie
 jest zmianą, którą da się cofnąć w pustkę.
 
+## Rysowanie
+
+Kartka ma stałą szerokość `PAGE_WIDTH` i przewija się tylko w pionie.
+„Rozmiar rzeczywisty” (`Cmd/Ctrl+0`) to szerokość kartki równa szerokości okna —
+przy tym powiększeniu nigdy nie ma przewijania w poziomie. Dopiero po
+powiększeniu ponad ten poziom kartka wystaje poza okno i widok da się przesunąć
+w bok (`Shift`+kółko albo palcem). To przesunięcie widoku po powiększonej
+kartce, a nie druga oś dokumentu — dokument pozostaje kartką, nie tablicą.
+
+Gotowe kreski trzymane są w kafelkach po `TILE_HEIGHT` pikseli strony;
+przerysowywane są tylko kafle widoczne i zmienione, a kreski odrzucane po
+bboxie. Powyżej `MAX_CACHE_SCALE` kafle są pomijane i kreski lecą wprost na
+ekran: w takim powiększeniu kafel byłby ogromny, a widocznych kresek jest mało.
+
+Wejście:
+
+- Pióro i mysz rysują, palec przewija, odwrócona końcówka rysika działa jak gumka.
+- Punkty zbierane są przez `getCoalescedEvents()`, więc próbki z tabletu nie giną.
+- Piksel na ekranie leci przed synchronizacją: `drawLatestSegment` rysuje od razu
+  w `pointermove`, a zapis do Yjs jest zbierany w jedną transakcję na klatkę.
+- Gumka kasuje **wzdłuż przebytej drogi**, nie w punktach próbkowania — przy
+  szybkim ruchu przeglądarka scala kilkadziesiąt zdarzeń w jedno i odstęp między
+  dwiema pozycjami bywa większy niż średnica gumki.
+
 ## Strojenie pióra
 
 Sprzęt nigdy nie odpowiada modelowi: tablety mapują nacisk różnie, a część
@@ -185,10 +210,8 @@ Realizacja idzie etapami z sekcji 8 instrukcji. Po każdym etapie `npm test`.
 - [x] 3. `core.js` — format v2, migracja z v1, walidatory, geometria, `widthFactor`.
 - [x] 4. `npm run vendor` i bundle Collab.
 - [x] 5. `doc.js` — schemat Yjs, UndoManager, eksport/import JSON.
-- [ ] 6. `renderer.js` — pointer events, dwie ścieżki renderowania, kafle, narzędzia, UI.
-      Tu też wchodzi potwierdzenie zamknięcia okna z niezapisanym, nienazwanym
-      notatnikiem — wcześniej nie ma stanu „są niezapisane zmiany”, którego
-      miałoby bronić.
+- [x] 6. `renderer.js` — pointer events, dwie ścieżki renderowania, kafle, narzędzia, UI,
+      potwierdzenie zamknięcia przy niezapisanych zmianach.
 - [ ] 7. `online.js` — kod zaproszenia, provider z `password`, awareness, limity, walidacja.
 - [ ] 8. QA.
 

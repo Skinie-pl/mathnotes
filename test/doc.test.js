@@ -176,6 +176,28 @@ test('eraseAt w trybie "split" podmienia kreskę na kawałki z nowymi id', (t) =
   assert.equal(notebook.strokes.get(0).get('brush'), 'fine');
 });
 
+test('eraseAt odsiewa kreski przez shouldConsider, zanim przeczyta ich punkty', (t) => {
+  const notebook = makeDoc();
+  t.after(() => notebook.destroy());
+
+  const odsiana = horizontalLine(notebook, 100);
+  const kasowana = horizontalLine(notebook, 100);
+  // Id trzeba zdjąć teraz: po skasowaniu Y.Map nie odda już swoich pól.
+  const odsianaId = odsiana.get('id');
+  const kasowanaId = kasowana.get('id');
+
+  const asked = [];
+  // Obie kreski leżą dokładnie pod gumką, ale sito przepuszcza tylko drugą.
+  const touched = notebook.eraseAt(75, 100, 15, 'whole', (map) => {
+    asked.push(map.get('id'));
+    return map === kasowana;
+  });
+
+  assert.equal(touched, 1);
+  assert.deepEqual(asked, [odsianaId, kasowanaId], 'sito dostaje każdą kreskę');
+  assert.deepEqual(strokeIds(notebook), [odsianaId], 'odsiana kreska została nietknięta');
+});
+
 test('eraseAt nic nie robi, gdy gumka nie dotyka kresek', (t) => {
   const notebook = makeDoc();
   t.after(() => notebook.destroy());

@@ -60,6 +60,30 @@ test('widthAt nie zmienia się, gdy kreska rośnie o kolejne punkty', () => {
   assert.deepEqual(after, before, 'szerokość istniejących punktów musi być niewrażliwa na dopisanie kolejnych');
 });
 
+test('obie ścieżki renderowania liczą te same szerokości odcinków', () => {
+  // Kanoniczna (drawStroke) przechodzi całą kreskę od zera. Inkrementalna
+  // (drawLatestSegment) liczy tylko odcinki dorzucone od ostatniej klatki.
+  // Jeśli te dwie listy się rozjadą, linia „skacze” po puszczeniu pióra.
+  const pts = [10, 10, 0.2, 20, 22, 0.55, 33, 31, 0.9, 40, 44, 0.3, 55, 50, 0.15];
+  const s = stroke({ pts: [] });
+
+  const incremental = [];
+  for (let i = 0; i < pts.length; i += 3) {
+    const drawnUpTo = core.pointCount(s);
+    s.pts.push(pts[i], pts[i + 1], pts[i + 2]);
+    // Nowe odcinki: od ostatniego narysowanego punktu do końca.
+    for (let seg = Math.max(0, drawnUpTo - 1); seg < core.pointCount(s) - 1; seg++) {
+      incremental.push(core.segmentWidth(s, seg));
+    }
+  }
+
+  const canonical = [];
+  for (let seg = 0; seg < core.pointCount(s) - 1; seg++) canonical.push(core.segmentWidth(s, seg));
+
+  assert.deepEqual(incremental, canonical);
+  assert.equal(canonical.length, core.pointCount(s) - 1);
+});
+
 test('widthFactor: highlighter i pędzel "fine" mają stałą szerokość', () => {
   for (const pressure of [0, 0.1, 0.5, 1]) {
     assert.equal(core.widthFactor('highlighter', 'round', pressure), core.MAX_WIDTH_FACTOR);

@@ -1,14 +1,35 @@
 'use strict';
 
-const { app, BrowserWindow, Menu, dialog } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain } = require('electron');
+const fs = require('node:fs/promises');
 const path = require('node:path');
-const { APP_NAME, MENU_ACTIONS } = require('./renderer/core.js');
+
+const { APP_NAME, MENU_ACTIONS, MAX_IMAGE_BYTES } = require('./renderer/core.js');
+const { saveNotebook, readNotebook } = require('./notebook-file.js');
 
 const isMac = process.platform === 'darwin';
 const INDEX_HTML = path.join(__dirname, 'index.html');
 
+const NOTEBOOK_FILTERS = [{ name: 'Notatnik MathNotes', extensions: ['json'] }];
+const IMAGE_MIME = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+};
+
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
+
+// Ścieżka bieżącego pliku żyje wyłącznie tutaj. Renderer jej nie zna i nie może
+// jej podać — ścieżki biorą się tylko z natywnych dialogów albo z listy
+// ostatnich plików systemu.
+let currentPath = null;
+let unsaved = false;
+let forceClose = false;
+// Plik z „Ostatnich” może przyjść, zanim renderer zdąży się zgłosić.
+let pendingOpen = null;
+let rendererReady = false;
 
 // ---------------------------------------------------------------------------
 // Okno
@@ -35,8 +56,36 @@ function createWindow() {
   });
 
   mainWindow.once('ready-to-show', () => mainWindow.show());
+
+  mainWindow.on('close', (event) => {
+    if (forceClose || !unsaved) return;
+
+    event.preventDefault();
+    const choice = dialog.showMessageBoxSync(mainWindow, {
+      type: 'warning',
+      title: 'Niezapisane zmiany',
+      message: 'Notatnik ma niezapisane zmiany.',
+      detail: 'Jeśli zamkniesz okno bez zapisania, zmiany przepadną.',
+      buttons: ['Zapisz', 'Nie zapisuj', 'Anuluj'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    });
+
+    if (choice === 2) return;
+    if (choice === 1) {
+      forceClose = true;
+      mainWindow.close();
+      return;
+    }
+    // „Zapisz”: renderer ma stan dokumentu, więc to on zapisuje i odmeldowuje
+    // się przez window:ready-to-close. Brak odpowiedzi = okno zostaje otwarte.
+    mainWindow.webContents.send('app:save-and-close');
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
+    rendererReady = false;
   });
 
   mainWindow.loadFile(INDEX_HTML);
@@ -55,6 +104,158 @@ app.on('web-contents-created', (_event, contents) => {
   contents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
   contents.on('will-attach-webview', (event) => event.preventDefault());
+});
+
+// ---------------------------------------------------------------------------
+// IPC — każdy handler sprawdza nadawcę i kształt argumentów
+// ---------------------------------------------------------------------------
+
+function isTrustedSender(event) {
+  return mainWindow !== null && event.sender === mainWindow.webContents;
+}
+
+function fileLabel(filePath) {
+  return path.basename(filePath, path.extname(filePath));
+}
+
+function rememberPath(filePath) {
+  currentPath = filePath;
+  app.addRecentDocument(filePath);
+}
+
+async function openFromPath(filePath) {
+  const raw = await readNotebook(filePath);
+  rememberPath(filePath);
+  return { name: fileLabel(filePath), raw };
+}
+
+ipcMain.handle('notebook:open', async (event) => {
+  if (!isTrustedSender(event)) return { canceled: true };
+
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: 'Otwórz notatnik',
+    properties: ['openFile'],
+    filters: NOTEBOOK_FILTERS,
+  });
+  if (canceled || filePaths.length === 0) return { canceled: true };
+
+  try {
+    return await openFromPath(filePaths[0]);
+  } catch (err) {
+    dialog.showMessageBoxSync(mainWindow, {
+      type: 'error',
+      title: 'Nie udało się otworzyć',
+      message: err.message,
+      buttons: ['OK'],
+    });
+    return { canceled: true };
+  }
+});
+
+ipcMain.handle('notebook:save', async (event, payload) => {
+  if (!isTrustedSender(event)) return { canceled: true };
+  if (payload === null || typeof payload !== 'object') return { canceled: true };
+  const { state, saveAs } = payload;
+  if (state === null || typeof state !== 'object' || Array.isArray(state)) return { canceled: true };
+
+  let target = saveAs === true ? null : currentPath;
+  if (!target) {
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Zapisz notatnik',
+      defaultPath: currentPath ?? 'notatnik.json',
+      filters: NOTEBOOK_FILTERS,
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    target = result.filePath;
+  }
+
+  try {
+    await saveNotebook(target, state);
+  } catch (err) {
+    dialog.showMessageBoxSync(mainWindow, {
+      type: 'error',
+      title: 'Nie udało się zapisać',
+      message: err.message,
+      buttons: ['OK'],
+    });
+    return { canceled: true };
+  }
+
+  rememberPath(target);
+  return { name: fileLabel(target) };
+});
+
+ipcMain.handle('notebook:new', (event) => {
+  if (!isTrustedSender(event)) return false;
+  currentPath = null;
+  return true;
+});
+
+ipcMain.handle('image:pick', async (event) => {
+  if (!isTrustedSender(event)) return { canceled: true };
+
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: 'Wstaw obraz',
+    properties: ['openFile'],
+    filters: [{ name: 'Obrazy', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+  });
+  if (canceled || filePaths.length === 0) return { canceled: true };
+
+  const filePath = filePaths[0];
+  const mime = IMAGE_MIME[path.extname(filePath).toLowerCase()];
+  if (!mime) return { canceled: true, reason: 'Nieobsługiwany format obrazu.' };
+
+  const bytes = await fs.readFile(filePath);
+  const dataUrl = 'data:' + mime + ';base64,' + bytes.toString('base64');
+  if (dataUrl.length > MAX_IMAGE_BYTES) {
+    return { canceled: true, reason: 'Obraz jest za duży (limit 5 MB po zakodowaniu).' };
+  }
+
+  return { dataUrl };
+});
+
+// Stan „są niezapisane zmiany” trzyma renderer; main potrzebuje go tylko po to,
+// żeby zapytać przy zamykaniu okna.
+ipcMain.on('notebook:dirty', (event, dirty) => {
+  if (!isTrustedSender(event)) return;
+  unsaved = dirty === true;
+});
+
+ipcMain.on('window:ready-to-close', (event) => {
+  if (!isTrustedSender(event)) return;
+  forceClose = true;
+  mainWindow.close();
+});
+
+ipcMain.on('renderer:ready', (event) => {
+  if (!isTrustedSender(event)) return;
+  rendererReady = true;
+  if (pendingOpen) {
+    const payload = pendingOpen;
+    pendingOpen = null;
+    mainWindow.webContents.send('notebook:opened', payload);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Otwieranie z systemu (lista „Ostatnie pliki”, przeciągnięcie na ikonę)
+// ---------------------------------------------------------------------------
+
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  openFromPath(filePath)
+    .then((payload) => {
+      if (rendererReady && mainWindow) mainWindow.webContents.send('notebook:opened', payload);
+      else pendingOpen = payload;
+    })
+    .catch((err) => {
+      dialog.showMessageBoxSync({
+        type: 'error',
+        title: 'Nie udało się otworzyć',
+        message: err.message,
+        buttons: ['OK'],
+      });
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -130,6 +331,8 @@ function buildMenu() {
       item('Powiększ', 'view:zoom-in', 'CmdOrCtrl+Plus'),
       item('Pomniejsz', 'view:zoom-out', 'CmdOrCtrl+-'),
       item('Rozmiar rzeczywisty', 'view:zoom-reset', 'CmdOrCtrl+0'),
+      { type: 'separator' },
+      item('Tło strony', 'view:background', 'CmdOrCtrl+G'),
       { type: 'separator' },
       { role: 'togglefullscreen', label: 'Pełny ekran' },
       { role: 'toggleDevTools', label: 'Narzędzia deweloperskie' },

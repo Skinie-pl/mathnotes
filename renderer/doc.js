@@ -123,15 +123,20 @@
 
     /**
      * Kasowanie gumką. Geometria siedzi w core.js; tutaj jest tylko mutacja.
+     *
+     * `shouldConsider` to wstępne sito: odczytanie punktów każdej kreski przy
+     * każdym ruchu gumki byłoby O(n) po całym dokumencie. Renderer ma bboxy
+     * w swoim cache'u i odsiewa nimi, zanim tu cokolwiek przeczytamy. Bez sita
+     * działa poprawnie, tylko wolno.
+     * @param {(map: object) => boolean} [shouldConsider]
      * @returns {number} ile kresek zostało ruszonych
      */
-    eraseAt(x, y, radius, mode) {
-      // ponytail: pełny skan z odczytem pts każdej kreski, O(n) na ruch gumki.
-      // Przy dużym dokumencie wchodzi tu wstępne odsianie po bboxach z kafli
-      // renderera — ale cache kresek należy do renderera, nie do tego modułu.
+    eraseAt(x, y, radius, mode, shouldConsider) {
       const hits = [];
       for (let i = 0; i < this.strokes.length; i++) {
-        const stroke = readStroke(this.strokes.get(i));
+        const map = this.strokes.get(i);
+        if (shouldConsider && !shouldConsider(map)) continue;
+        const stroke = readStroke(map);
         if (!stroke) continue;
         const pieces = core.eraseStroke(stroke, x, y, radius, mode);
         if (pieces === null) continue;

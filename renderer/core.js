@@ -74,6 +74,7 @@
     'view:zoom-in',
     'view:zoom-out',
     'view:zoom-reset',
+    'view:background',
     'online:start',
     'online:join',
     'online:copy-invite',
@@ -152,6 +153,17 @@
 
   function maxWidth(stroke) {
     return stroke.size * MAX_WIDTH_FACTOR;
+  }
+
+  /**
+   * Szerokość odcinka między punktem i a i+1. Kreska jest rysowana odcinek po
+   * odcinku z zaokrąglonymi końcami, więc TO jest liczba, którą muszą zgodnie
+   * policzyć obie ścieżki renderowania: drawLatestSegment w trakcie pociągnięcia
+   * i drawStroke przy przerysowaniu. Zależy wyłącznie od dwóch sąsiednich
+   * punktów — nigdy od długości kreski.
+   */
+  function segmentWidth(stroke, i) {
+    return (widthAt(stroke, i) + widthAt(stroke, i + 1)) / 2;
   }
 
   // ==========================================================================
@@ -610,6 +622,7 @@
     widthFactor,
     widthAt,
     maxWidth,
+    segmentWidth,
     pointCount,
     shouldKeepPoint,
     strokeBounds,
