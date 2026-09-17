@@ -56,6 +56,27 @@ Uruchamiaj go **tylko** przy aktualizacji tych bibliotek, nigdy w `npm start`.
 Wersje są przypięte dokładnie (bez `^`) i trzymane w `devDependencies`, bo do
 runtime'u trafia wyłącznie zvendorowany bundle.
 
+Co wchodzi do bundle'a, decyduje `scripts/collab-entry.js` — reszta bibliotek
+zostaje w środku. `scripts/node-shims.js` dokłada minimalne podpórki pod
+node'owe globale, których szukają zależności y-webrtc (`simple-peer` →
+`readable-stream`, `debug`). Świadomie nie ma tam pełnego polyfilla node'a:
+gdy któraś biblioteka zacznie potrzebować czegoś więcej, lepiej zobaczyć błąd
+builda niż dostać po cichu atrapę zwracającą bzdury.
+
+Sam skrypt pilnuje trzech rzeczy i przerywa build, gdy któraś nie gra:
+
+1. Zainstalowane wersje odpowiadają przypiętym w `package.json` — bundle nie
+   może pochodzić z innych wersji, niż deklaruje repo.
+2. Wynik nie zawiera `eval(` ani `new Function(`. CSP renderera to
+   `script-src 'self'` bez `unsafe-eval`, więc inaczej wywaliłoby się dopiero
+   w runtime, w losowym miejscu sesji online. Ten sam warunek sprawdza test,
+   żeby ręcznie dłubany bundle też nie przeszedł.
+3. Wynik faktycznie wystawia `globalThis.Collab`.
+
+Bundle nie jest minifikowany: to commitowany kod obcego pochodzenia, który ma
+dać się przejrzeć i zdiffować przy aktualizacji. Licencje zależności zostają
+na końcu pliku — to ich jedyna kopia w repo.
+
 ## Format pliku
 
 Plik notatnika to tekstowy JSON z polem `version`, nigdy binarny stan Yjs —
@@ -137,7 +158,7 @@ Realizacja idzie etapami z sekcji 8 instrukcji. Po każdym etapie `npm test`.
 - [x] 1. Szkielet Electron: okno, `preload.js`, CSP, blokada nawigacji, menu.
 - [x] 2. `notebook-file.js` — atomowy zapis, `.bak`, testy.
 - [x] 3. `core.js` — format v2, migracja z v1, walidatory, geometria, `widthFactor`.
-- [ ] 4. `npm run vendor` i bundle Collab.
+- [x] 4. `npm run vendor` i bundle Collab.
 - [ ] 5. `doc.js` — schemat Yjs, UndoManager, eksport/import JSON.
 - [ ] 6. `renderer.js` — pointer events, dwie ścieżki renderowania, kafle, narzędzia, UI.
       Tu też wchodzi potwierdzenie zamknięcia okna z niezapisanym, nienazwanym
