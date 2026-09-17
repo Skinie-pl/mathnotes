@@ -14,7 +14,9 @@
   const FILE_FORMAT_VERSION = 4;
 
   // Kartka, nie płótno: stała szerokość, przewijanie w dół bez końca.
-  const PAGE_WIDTH = 900;
+  // Szersza niż w poprzedniej wersji — przy 900 px rysunek szybko dobijał
+  // do krawędzi i nie było się gdzie cofnąć.
+  const PAGE_WIDTH = 1600;
   // Odrobina luzu, żeby krawędź nie sprawiała wrażenia ściany.
   const PAGE_PAN_MARGIN = 60;
   // Pion jest „nieskończony”, ale nie nieograniczony — walidacja musi mieć

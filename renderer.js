@@ -4,16 +4,17 @@
 // mutacje dokumentu w renderer/doc.js, sesja online w renderer/online.js.
 (function () {
   const core = window.MathNotesCore;
-  const { NotebookDoc } = window.MathNotesDoc;
+  const { NotebookDoc, LOAD_ORIGIN } = window.MathNotesDoc;
   const onlineApi = window.MathNotesOnline;
   const { Y } = window.Collab;
 
   const TAU = Math.PI * 2;
   const HOLD_MS = 420;
-  // Powiększenie liczymy względem dopasowania kartki do szerokości okna.
-  // 100 % = cała szerokość obszaru rysowania widoczna; bardziej oddalić się
-  // nie da, bo dalej jest już tylko pustka wokół kartki.
-  const MIN_ZOOM = 1;
+  // Powiększenie liczymy względem dopasowania kartki do szerokości okna:
+  // 100 % = cała szerokość obszaru rysowania widoczna. Poniżej stu procent
+  // po bokach widać margines, ale w pionie mieści się dużo więcej notatek —
+  // i o to chodzi przy przeglądaniu długiego notatnika.
+  const MIN_ZOOM = 0.25;
   const MAX_ZOOM = 8;
   // Powyżej tej skali cache'u rysujemy kreski wprost zamiast z kafli.
   const MAX_CACHE_SCALE = 2;
@@ -108,6 +109,11 @@
 
   function clampViewX(x, scale) {
     const viewportWorldWidth = viewW / scale;
+    // Po oddaleniu kartka jest węższa niż okno — wtedy zamiast dociskać ją
+    // do lewej krawędzi, stawiamy ją na środku.
+    if (viewportWorldWidth > core.PAGE_WIDTH + core.PAGE_PAN_MARGIN * 2) {
+      return (core.PAGE_WIDTH - viewportWorldWidth) / 2;
+    }
     const minX = -core.PAGE_PAN_MARGIN;
     const maxX = Math.max(minX, core.PAGE_WIDTH - viewportWorldWidth + core.PAGE_PAN_MARGIN);
     return core.clamp(x, minX, maxX);
@@ -2054,37 +2060,110 @@
     return live;
   }
 
+  // Cudze kreski rosną punkt po punkcie. Odczytanie kreski z Y.Doc kosztuje
+  // tyle, ile ma ona punktów, więc robienie tego przy każdym zdarzeniu dławi
+  // widok drugiej osoby. Zbieramy je i przerysowujemy raz na klatkę.
+  const pendingRemotePaint = new Set();
+  let remotePaintScheduled = false;
+
+  function scheduleRemotePaint() {
+    if (remotePaintScheduled) return;
+    remotePaintScheduled = true;
+    requestAnimationFrame(() => {
+      remotePaintScheduled = false;
+      for (const map of pendingRemotePaint) {
+        const live = liveStrokes.get(map);
+        if (!live) continue;
+        strokeCache.delete(map);
+        const entry = entryFor(map);
+        if (!entry) continue;
+        paintLive(entry.stroke, live.drawn);
+        live.drawn = core.pointCount(entry.stroke);
+      }
+      pendingRemotePaint.clear();
+    });
+  }
+
+  /** Bez tego cache pęczniałby o wpisy skasowanych kresek. */
+  function pruneStrokeCache() {
+    if (strokeCache.size > notebook.strokes.length * 2 + 256) strokeCache.clear();
+  }
+
+  function boundsOfAdded(event) {
+    const boxes = [];
+    for (const item of event.changes.added) {
+      for (const value of item.content.getContent()) {
+        if (!value || typeof value.toJSON !== 'function') continue;
+        const json = value.toJSON();
+        const stroke = core.validateStroke(json);
+        if (stroke) {
+          boxes.push(core.strokeBounds(stroke));
+          continue;
+        }
+        const image = core.validateImage(json);
+        if (image) boxes.push(core.imageBounds(image));
+      }
+    }
+    return boxes;
+  }
+
   function handleDocChange(events, transaction, local) {
-    let structural = false;
+    let needsFullInvalidate = false;
+    let annotationsChanged = false;
+    let selectionMaybeStale = false;
 
     for (const event of events) {
       const target = event.target;
+
       // Dosypanie punktów do kreski: unieważniamy tylko kafle tej kreski.
       if (target && target.parent && target.parent.get && target.parent.get('pts') === target) {
         const map = target.parent;
         strokeCache.delete(map);
         if (map === activeStrokeMap) continue;
-
-        const live = markLive(map);
-        const entry = entryFor(map);
-        if (entry) {
-          if (!local) paintLive(entry.stroke, live.drawn);
-          live.drawn = core.pointCount(entry.stroke);
+        markLive(map);
+        if (!local) {
+          pendingRemotePaint.add(map);
+          scheduleRemotePaint();
         }
         continue;
       }
-      structural = true;
-      if (target && target.toJSON) strokeCache.delete(target);
+
+      if (target === notebook.annotations) {
+        annotationsChanged = true;
+        continue; // adnotacje rysujemy wprost na wierzchu, kafle ich nie trzymają
+      }
+
+      if (target === notebook.strokes || target === notebook.images) {
+        selectionMaybeStale = true;
+        // Dodane elementy unieważniają tylko swoje kafle. Przy usuwaniu nie da
+        // się już odczytać, gdzie leżały, więc tam wracamy do pełnego czyszczenia.
+        if (event.changes.deleted.size > 0) needsFullInvalidate = true;
+        else for (const box of boundsOfAdded(event)) invalidateTiles(box);
+        continue;
+      }
+
+      if (target && target.toJSON) {
+        // Zmiana pola istniejącego obiektu (np. grubość po skalowaniu):
+        // najpierw unieważniamy stare miejsce, potem nowe.
+        const stale = strokeCache.get(target);
+        if (stale) invalidateTiles(stale.bounds);
+        strokeCache.delete(target);
+        const fresh = entryFor(target);
+        if (fresh) invalidateTiles(fresh.bounds);
+        else needsFullInvalidate = true;
+        selectionMaybeStale = true;
+      }
     }
 
-    if (structural) {
-      strokeCache.clear();
-      tiles.clear();
-      if (selectionBox) recomputeSelectionBox();
-      renderAnnotationList();
-    }
+    if (needsFullInvalidate) tiles.clear();
+    pruneStrokeCache();
+    if (selectionMaybeStale && selectionBox) recomputeSelectionBox();
+    // Lista adnotacji to DOM — przebudowujemy ją tylko, gdy ktoś na nią patrzy.
+    if (annotationsChanged && isOpen(annotationListOverlay)) renderAnnotationList();
 
-    if (local) setDirty(true);
+    // Cudza zmiana też jest zmianą niezapisaną: bez tego zamknięcie okna po
+    // sesji wyrzuciłoby cudzą pracę bez pytania. Wczytanie pliku to nie zmiana.
+    if (transaction.origin !== LOAD_ORIGIN) setDirty(true);
     updateHistoryButtons();
     scheduleRender();
   }
@@ -2303,6 +2382,7 @@
       identity = onlineApi.saveIdentity({ ...identity, ...patch });
       if (sessionActive()) session.setIdentity(identity);
       refreshPreview();
+      renderSessionPeople();
       renderPeers();
     };
 
@@ -2326,6 +2406,42 @@
 
     container.append(label, input, colors, preview);
     refreshPreview();
+  }
+
+  /** Kto jest w sesji — ty plus wszyscy, których widzi awareness. */
+  function renderSessionPeople() {
+    const list = $('session-people');
+    if (!list) return;
+    list.replaceChildren();
+    if (!sessionActive()) return;
+
+    const people = [{ name: identity.name, color: identity.color, self: true }, ...peers];
+    const heading = document.createElement('div');
+    heading.className = 'people-heading';
+    heading.textContent = 'W sesji: ' + people.length + (people.length === 1 ? ' osoba' : ' os.');
+    list.append(heading);
+
+    for (const person of people) {
+      const row = document.createElement('div');
+      row.className = 'person';
+
+      const dot = document.createElement('span');
+      dot.className = 'person-dot';
+      dot.style.background = person.color;
+
+      const name = document.createElement('span');
+      name.className = 'person-name';
+      name.textContent = person.name; // nigdy innerHTML
+
+      row.append(dot, name);
+      if (person.self) {
+        const tag = document.createElement('span');
+        tag.className = 'person-self';
+        tag.textContent = 'to Ty';
+        row.append(tag);
+      }
+      list.append(row);
+    }
   }
 
   function updateOnlineStatusUI() {
@@ -2378,6 +2494,7 @@
   function startSession(code, options) {
     if (sessionActive()) {
       renderIdentityBlock($('share-identity'));
+      renderSessionPeople();
       openModal(shareOverlay);
       return;
     }
@@ -2395,6 +2512,7 @@
     session.on('peers', (list) => {
       peers = list;
       updateOnlineStatusUI();
+      renderSessionPeople();
       renderPeers();
     });
     session.on('status', ({ connected }) => {
@@ -2410,6 +2528,7 @@
     session.on('stopped', () => {
       peers = [];
       updateOnlineStatusUI();
+      renderSessionPeople();
       renderPeers();
     });
 
@@ -2426,6 +2545,7 @@
     shareCode.value = created;
     closeModal(joinOverlay);
     renderIdentityBlock($('share-identity'));
+    renderSessionPeople();
     openModal(shareOverlay);
     updateOnlineStatusUI();
   }
@@ -2441,6 +2561,7 @@
     shareCode.value = '';
     closeModal(shareOverlay);
     updateOnlineStatusUI();
+    renderSessionPeople();
     renderPeers();
     flashTitle('MathNotes — sesja online zakończona');
   }
@@ -2457,6 +2578,7 @@
   function openJoin() {
     if (sessionActive()) {
       renderIdentityBlock($('share-identity'));
+      renderSessionPeople();
       openModal(shareOverlay);
       return;
     }
@@ -2600,5 +2722,39 @@
   resizeCanvas();
   resetZoom();
   setInterval(autosaveTick, AUTOSAVE_INTERVAL_MS);
+  // QA-HOOK (tymczasowe)
+  window.__qa = {
+    state: () => {
+      const st = notebook.toState().state;
+      return { kresek: st.strokes.length, obrazow: st.images.length, adnotacji: st.annotations.length };
+    },
+    dodajKreske: (kolor) => {
+      notebook.addStroke({
+        tool: 'pen', brush: 'pen', color: kolor || '#ffffff', size: 4, pressureEnabled: false,
+        pts: [100, 100, 0.5, 200, 150, 0.5, 300, 100, 0.5],
+      });
+      notebook.stopCapturing();
+    },
+    dodajObraz: (wielkoscKB) => {
+      // Generujemy PNG o zadanej mniej wiecej wadze, zeby sprawdzic limit kanalu.
+      const n = Math.max(1, Math.round(Math.sqrt(wielkoscKB * 1024 * 0.75)));
+      const c = document.createElement('canvas');
+      c.width = n; c.height = n;
+      const x = c.getContext('2d');
+      const img = x.createImageData(n, n);
+      for (let i = 0; i < img.data.length; i++) img.data[i] = Math.floor(Math.random() * 256);
+      x.putImageData(img, 0, 0);
+      const dataUrl = c.toDataURL('image/png');
+      notebook.addImage({ x: 50, y: 400, w: 200, h: 200, dataUrl });
+      notebook.stopCapturing();
+      return Math.round(dataUrl.length / 1024) + ' kB';
+    },
+    dodajAdnotacje: (etykieta) => {
+      notebook.addAnnotation({ y: 300, label: etykieta || 'Test' });
+      notebook.stopCapturing();
+    },
+    peers: () => peers.map((p) => p.name + '/' + p.color),
+    bitmapy: () => [...bitmaps.entries()].map(([id, b]) => id.slice(0,6) + '=' + (b ? 'ok' : 'null')).join(','),
+  };
   window.api.ready();
 })();

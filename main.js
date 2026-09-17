@@ -489,3 +489,57 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   if (!isMac) app.quit();
 });
+
+// --- TYMCZASOWY HARNESS QA (nie commitować) ---
+if (process.env.MN_SYNC2) {
+  const { writeFileSync } = require('node:fs');
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  setTimeout(() => { console.log('QA TIMEOUT'); app.exit(2); }, 120000);
+  const makeWindow = (x) => {
+    const w = new BrowserWindow({
+      width: 820, height: 620, x, y: 40, show: true, backgroundColor: '#000000',
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    w.loadFile(INDEX_HTML);
+    return w;
+  };
+
+  app.whenReady().then(async () => {
+    await wait(1200);
+    const A = makeWindow(20); const B = makeWindow(860);
+    await wait(2500);
+    const jsA = (c) => A.webContents.executeJavaScript(c);
+    const jsB = (c) => B.webContents.executeJavaScript(c);
+
+    // Ile jasnych pikseli na kartce — czyli czy cokolwiek widać.
+    const piksele = (js) => js(
+      "(() => { const c=document.getElementById('canvas'); const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;" +
+      " let n=0; for(let i=0;i<d.length;i+=4) if(d[i]>40||d[i+1]>40||d[i+2]>40) n++; return n; })()");
+
+    await jsA("document.getElementById('online-status-btn').click()"); await wait(300);
+    await jsA("document.getElementById('online-join-start').click()"); await wait(4000);
+    const kod = await jsA("document.getElementById('online-share-code').value");
+    await jsA("document.getElementById('online-share-close').click()");
+    await jsB("document.getElementById('online-status-btn').click()"); await wait(300);
+    await jsB(`document.getElementById('online-join-input').value = ${JSON.stringify(kod)}`);
+    await jsB("document.getElementById('online-join-ok').click()"); await wait(6000);
+    await jsB("document.getElementById('online-share-close').click()"); await wait(500);
+
+    console.log('QA start          B piksele=' + await piksele(jsB));
+
+    await jsA("window.__qa.dodajKreske('#ffffff')"); await wait(2500);
+    console.log('QA po kresce      B piksele=' + await piksele(jsB) + '  B stan=' + await jsB('JSON.stringify(window.__qa.state())'));
+
+    await jsA("window.__qa.dodajAdnotacje('Rozdzial 1')"); await wait(2500);
+    console.log('QA po adnotacji   B piksele=' + await piksele(jsB) + '  B stan=' + await jsB('JSON.stringify(window.__qa.state())'));
+
+    await jsA('window.__qa.dodajObraz(60)'); await wait(4000);
+    console.log('QA po obrazie     B piksele=' + await piksele(jsB) + '  B stan=' + await jsB('JSON.stringify(window.__qa.state())'));
+    console.log('QA B bitmapy=' + await jsB("window.__qa.bitmapy ? window.__qa.bitmapy() : 'brak'"));
+
+    writeFileSync('/tmp/qa-sync-A.png', (await A.webContents.capturePage()).toPNG());
+    writeFileSync('/tmp/qa-sync-B.png', (await B.webContents.capturePage()).toPNG());
+    console.log('QA A piksele=' + await piksele(jsA));
+    app.exit(0);
+  }).catch((e) => { console.log('QA BLAD:', e && e.message); app.exit(3); });
+}

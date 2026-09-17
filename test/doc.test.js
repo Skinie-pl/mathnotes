@@ -576,15 +576,19 @@ test('transformSelection nie rusza niczego, gdy cokolwiek wyszłoby poza kartkę
   const notebook = makeDoc();
   t.after(() => notebook.destroy());
 
+  // Liczone od krawędzi świata, żeby test nie zależał od bieżącej szerokości kartki.
+  const przyKrawedzi = core.MAX_WORLD_X - 50;
   const zostaje = notebook.addStroke(penStroke({ id: 'a1', pts: [100, 100, 0.5, 120, 120, 0.5] }));
-  const wypada = notebook.addStroke(penStroke({ id: 'b2', pts: [800, 100, 0.5, 850, 120, 0.5] }));
+  const wypada = notebook.addStroke(
+    penStroke({ id: 'b2', pts: [przyKrawedzi, 100, 0.5, przyKrawedzi + 20, 120, 0.5] }),
+  );
 
   assert.equal(
-    notebook.transformSelection([zostaje, wypada], [], { ox: 0, oy: 0, k: 1, dx: 500, dy: 0 }),
+    notebook.transformSelection([zostaje, wypada], [], { ox: 0, oy: 0, k: 1, dx: 200, dy: 0 }),
     false,
   );
   assert.deepEqual(zostaje.get('pts').toArray(), [100, 100, 0.5, 120, 120, 0.5], 'pierwsza kreska nietknięta');
-  assert.deepEqual(wypada.get('pts').toArray(), [800, 100, 0.5, 850, 120, 0.5]);
+  assert.deepEqual(wypada.get('pts').toArray(), [przyKrawedzi, 100, 0.5, przyKrawedzi + 20, 120, 0.5]);
 });
 
 test('skalowanie zaznaczenia zmienia też grubość kreski', (t) => {

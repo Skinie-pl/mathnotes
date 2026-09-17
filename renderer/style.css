@@ -903,3 +903,55 @@ body {
 #grid-box .modal-actions button:hover {
   background: var(--btn-hover);
 }
+
+/* --- lista osób w sesji --- */
+
+#session-people {
+  margin-bottom: 4px;
+}
+
+#session-people:empty {
+  display: none;
+}
+
+.people-heading {
+  font-size: 11px;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+
+.person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  background: var(--item);
+  border: 1px solid var(--item-border);
+  border-radius: 7px;
+  font-size: 13px;
+}
+
+.person-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+}
+
+.person-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+
+.person-self {
+  font-size: 11px;
+  color: var(--faint);
+}

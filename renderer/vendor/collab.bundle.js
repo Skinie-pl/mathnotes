@@ -2669,6 +2669,115 @@
     }
   });
 
+  // scripts/webrtc-frames.js
+  var require_webrtc_frames = __commonJS({
+    "scripts/webrtc-frames.js"(exports, module) {
+      "use strict";
+      init_node_shims();
+      var FRAME_WHOLE = 0;
+      var FRAME_PART = 1;
+      var FRAME_HEADER = 9;
+      var MAX_PAYLOAD = 48 * 1024;
+      var MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
+      var MAX_PENDING_MESSAGES = 8;
+      var nextMessageId = 1;
+      function asBytes(data) {
+        if (data instanceof Uint8Array) return data;
+        if (data instanceof ArrayBuffer) return new Uint8Array(data);
+        if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        return null;
+      }
+      function toFrames(bytes) {
+        if (bytes.length + 1 <= MAX_PAYLOAD) {
+          const frame = new Uint8Array(bytes.length + 1);
+          frame[0] = FRAME_WHOLE;
+          frame.set(bytes, 1);
+          return [frame];
+        }
+        const total = Math.ceil(bytes.length / MAX_PAYLOAD);
+        if (total > 65535) throw new Error("Wiadomo\u015B\u0107 za du\u017Ca, \u017Ceby j\u0105 podzieli\u0107 na ramki.");
+        const id2 = nextMessageId++ >>> 0;
+        const frames = [];
+        for (let index = 0; index < total; index++) {
+          const chunk = bytes.subarray(index * MAX_PAYLOAD, (index + 1) * MAX_PAYLOAD);
+          const frame = new Uint8Array(FRAME_HEADER + chunk.length);
+          const view = new DataView(frame.buffer);
+          frame[0] = FRAME_PART;
+          view.setUint32(1, id2, true);
+          view.setUint16(5, index, true);
+          view.setUint16(7, total, true);
+          frame.set(chunk, FRAME_HEADER);
+          frames.push(frame);
+        }
+        return frames;
+      }
+      function collect(pending, bytes) {
+        if (bytes.length === 0) return bytes;
+        if (bytes[0] === FRAME_WHOLE) return bytes.subarray(1);
+        if (bytes[0] !== FRAME_PART || bytes.length < FRAME_HEADER) return null;
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const id2 = view.getUint32(1, true);
+        const index = view.getUint16(5, true);
+        const total = view.getUint16(7, true);
+        if (total === 0 || index >= total) return null;
+        let entry = pending.get(id2);
+        if (!entry) {
+          while (pending.size >= MAX_PENDING_MESSAGES) pending.delete(pending.keys().next().value);
+          entry = { total, parts: new Array(total), bytes: 0, got: 0 };
+          pending.set(id2, entry);
+        }
+        if (entry.total !== total || entry.parts[index]) return null;
+        entry.parts[index] = bytes.subarray(FRAME_HEADER);
+        entry.bytes += bytes.length - FRAME_HEADER;
+        entry.got += 1;
+        if (entry.bytes > MAX_MESSAGE_BYTES) {
+          pending.delete(id2);
+          return null;
+        }
+        if (entry.got < entry.total) return null;
+        pending.delete(id2);
+        const out = new Uint8Array(entry.bytes);
+        let offset = 0;
+        for (const part of entry.parts) {
+          out.set(part, offset);
+          offset += part.length;
+        }
+        return out;
+      }
+      function patchPeer2(Peer3) {
+        if (Peer3.prototype.__mnFramed) return Peer3;
+        const originalSend = Peer3.prototype.send;
+        const originalEmit = Peer3.prototype.emit;
+        Peer3.prototype.send = function send(data) {
+          const bytes = asBytes(data);
+          if (bytes === null) return originalSend.call(this, data);
+          for (const frame of toFrames(bytes)) originalSend.call(this, frame);
+        };
+        Peer3.prototype.emit = function emit(event, ...args2) {
+          if (event !== "data") return originalEmit.call(this, event, ...args2);
+          const bytes = asBytes(args2[0]);
+          if (bytes === null) return originalEmit.call(this, event, ...args2);
+          if (!this.__mnPending) this.__mnPending = /* @__PURE__ */ new Map();
+          const complete = collect(this.__mnPending, bytes);
+          if (complete === null) return true;
+          return originalEmit.call(this, "data", complete);
+        };
+        Peer3.prototype.__mnFramed = true;
+        return Peer3;
+      }
+      module.exports = {
+        FRAME_HEADER,
+        MAX_PAYLOAD,
+        MAX_MESSAGE_BYTES,
+        MAX_PENDING_MESSAGES,
+        asBytes,
+        toFrames,
+        collect,
+        patchPeer: patchPeer2
+      };
+    }
+  });
+
   // scripts/collab-entry.js
   init_node_shims();
 
@@ -13533,6 +13642,9 @@ ${err.toString()}`);
   };
 
   // scripts/collab-entry.js
+  var import_simplepeer_min2 = __toESM(require_simplepeer_min());
+  var import_webrtc_frames = __toESM(require_webrtc_frames());
+  (0, import_webrtc_frames.patchPeer)(import_simplepeer_min2.default);
   globalThis.Collab = { Y: yjs_exports, WebrtcProvider, awarenessProtocol: awareness_exports };
 })();
 /*! Bundled license information:

@@ -20,6 +20,7 @@
     "esbuild": "0.28.2",
     "jspdf": "4.2.1",
     "lib0": "0.2.117",
+    "simple-peer": "9.11.1",
     "y-protocols": "1.0.7",
     "y-webrtc": "10.3.0",
     "yjs": "13.6.32"

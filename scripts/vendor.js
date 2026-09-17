@@ -46,7 +46,7 @@ function checkCsp(code) {
 function pinnedVersions() {
   const pkg = require(path.join(ROOT, 'package.json'));
   const all = { ...pkg.dependencies, ...pkg.devDependencies };
-  return ['yjs', 'y-webrtc', 'y-protocols', 'lib0', 'jspdf'].map((name) => {
+  return ['yjs', 'y-webrtc', 'y-protocols', 'lib0', 'simple-peer', 'jspdf'].map((name) => {
     const installed = require(path.join(ROOT, 'node_modules', name, 'package.json')).version;
     return { name, declared: all[name], installed };
   });

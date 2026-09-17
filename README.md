@@ -65,6 +65,7 @@ Bez bundlera i bez transpilacji w runtime — zwykłe pliki `.js` ładowane prze
 | `renderer.js` | Wyłącznie okablowanie DOM/canvas. |
 | `renderer/style.css` | Wygląd. |
 | `renderer/vendor/` | Zvendorowane biblioteki, budowane przez `npm run vendor`. |
+| `scripts/webrtc-frames.js` | Dzielenie wiadomości na ramki dla kanału WebRTC; wchodzi do bundle'a. |
 
 ### Zależności i `npm run vendor`
 
@@ -231,18 +232,23 @@ pociągnięcie to dokładnie jedno undo, także gdy ktoś rysuje bardzo wolno.
 Wczytanie pliku leci osobnym originem i czyści historię: otwarcie notatnika nie
 jest zmianą, którą da się cofnąć w pustkę.
 
+Kropka niezapisanych zmian zapala się **także od zmian cudzych**. W sesji online
+plik na twoim dysku rozjeżdża się z dokumentem również wtedy, gdy rysuje ktoś
+inny, a to twój egzemplarz zostanie zapisany.
+
 ## Rysowanie
 
-Kartka ma stałą szerokość `PAGE_WIDTH` (900 px) i przewija się w dół bez końca.
+Kartka ma stałą szerokość `PAGE_WIDTH` (1600 px) i przewija się w dół bez końca.
 Widok trzyma współrzędne świata lewego górnego rogu plus powiększenie; w poziomie
 jest przycięty do kartki z marginesem `PAGE_PAN_MARGIN`, więc nie da się odpłynąć
 w bok.
 
-**100 % to szerokość kartki dopasowana do okna** i zarazem maksymalne oddalenie —
-dalej jest już tylko pustka wokół kartki, więc nie ma po co oddalać. W drugą
-stronę można przybliżyć do 800 %. Wskaźnik procentów na dole toolbara resetuje
-powiększenie kliknięciem. Ponieważ 100 % zależy od szerokości okna, po zmianie
-rozmiaru trzymamy ten sam poziom procentowy, a nie tę samą skalę.
+**100 % to szerokość kartki dopasowana do okna.** Oddalić można do 25 %, przybliżyć
+do 800 %. Poniżej 100 % kartka jest węższa niż okno i wtedy `clampViewX` stawia ją
+na środku zamiast dociskać do lewej krawędzi — inaczej oddalanie wyglądałoby jak
+ucieczka rysunku w bok. Wskaźnik procentów na dole toolbara resetuje powiększenie
+kliknięciem. Ponieważ 100 % zależy od szerokości okna, po zmianie rozmiaru trzymamy
+ten sam poziom procentowy, a nie tę samą skalę.
 
 ### Kratka w tle
 
@@ -337,8 +343,40 @@ Etykieta z nickiem wyświetla się nieco w prawo i w dół od cudzego kursora, �
 nie zasłaniała miejsca, w którym ktoś właśnie rysuje. Nick przechodzi przez tę
 samą sanityzację co każda inna treść od innych osób.
 
+W panelu sesji jest też **lista osób**, które są w niej w tej chwili: kropka
+w kolorze danej osoby, jej nick i „to Ty” przy tobie. Bierze się wprost
+z awareness, więc znika sama, gdy ktoś się rozłączy.
+
 Ustawienia połączenia (adresy sygnalizacji, TURN) oraz nick i kolor żyją
-w `localStorage` tego komputera, nigdy w pliku notatnika.
+w `localStorage` tego komputera, nigdy w pliku notatnika. Pola adresów są
+opcjonalne — puste znaczy „użyj domyślnych”. Wpisany tam zły adres potrafi
+wyglądać jak zepsuta aplikacja: nikt nie dołącza do sesji, bo obie strony nie
+spotykają się na tym samym serwerze sygnalizacyjnym.
+
+### Dzielenie wiadomości na ramki
+
+Kanał danych WebRTC ma limit pojedynczej wiadomości (w Chromium ok. 256 kB),
+a `simple-peer` niczego nie dzieli — woła `channel.send()` wprost. y-webrtc
+wysyła całą aktualizację Yjs jako jedną wiadomość, więc wklejony obraz albo
+pierwsza synchronizacja notatnika z obrazami przekraczały limit: `send` rzucał
+wyjątkiem, kanał się zamykał i od tej chwili **nie docierało już nic, w żadną
+stronę** — ani obrazy, ani adnotacje, ani kreski narysowane później.
+
+`scripts/webrtc-frames.js` nakłada na `simple-peer` własną warstwę ramek
+(`patchPeer`, wpinany w `scripts/collab-entry.js`, czyli wewnątrz zvendorowanego
+bundle'a). Wiadomość do 48 kB idzie jedną ramką, większa jest cięta na ramki
+z nagłówkiem: identyfikator wiadomości, numer ramki, liczba ramek. Odbiorca
+składa je z powrotem, zanim y-webrtc w ogóle zobaczy zdarzenie `data`.
+
+Druga strona jest niezaufana, więc składanie ma twarde granice: maksymalnie
+16 MB na wiadomość, najwyżej 8 rozgrzebanych wiadomości naraz (najstarsze lecą
+za burtę), a ramka z niezgodną liczbą ramek, powtórzonym numerem albo numerem
+spoza zakresu jest po prostu pomijana. Testy w `test/webrtc-frames.test.js`.
+
+Uwaga metodologiczna: **dwa okna w jednym procesie Electrona niczego tu nie
+dowodzą**. y-webrtc synchronizuje je wtedy przez `BroadcastChannel` i nigdy nie
+dotyka kanału WebRTC, więc błąd tej klasy wygląda w takim teście na naprawiony.
+Trzeba dwóch osobnych procesów z osobnym `--user-data-dir`.
 
 Przy dołączaniu domyślnie wybrany jest **nowy notatnik**, żeby nikt przypadkiem
 nie wysłał obcym osobom swoich notatek. „Nowy notatnik” oznacza nowy `Y.Doc`,
