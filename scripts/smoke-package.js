@@ -56,9 +56,22 @@ function cdp(url) {
   const socket = new WebSocket(url);
   let nextId = 1;
   const pending = new Map();
+  // Bez treści błędu raport brzmi „brak core (jest undefined)” i nie mówi nic
+  // o przyczynie. Zwykle jeden wyjątek przerywa ładowanie kilku skryptów.
+  const errors = [];
 
   socket.addEventListener('message', (event) => {
     const message = JSON.parse(event.data);
+    if (message.method === 'Runtime.exceptionThrown') {
+      const d = message.params.exceptionDetails;
+      errors.push((d.exception?.description || d.text) + ' @ ' + (d.url || '?') + ':' + (d.lineNumber + 1));
+      return;
+    }
+    if (message.method === 'Log.entryAdded' && message.params.entry.level === 'error') {
+      errors.push(message.params.entry.text + ' @ ' + (message.params.entry.url || '?'));
+      return;
+    }
+    if (message.method) return;
     const entry = pending.get(message.id);
     if (!entry) return;
     pending.delete(message.id);
@@ -73,6 +86,7 @@ function cdp(url) {
 
   return {
     ready,
+    errors,
     close: () => socket.close(),
     send(method, params) {
       const id = nextId++;
@@ -98,6 +112,16 @@ async function main() {
     const page = await findPage();
     const session = cdp(page.webSocketDebuggerUrl);
     await session.ready;
+    await session.send('Runtime.enable');
+    await session.send('Log.enable');
+
+    // Cel DevTools pojawia się, zanim strona dokończy ładowanie skryptów.
+    // Bez tego test raz na jakiś czas ogłaszał zepsutą paczkę, bo pytał za
+    // wcześnie — zwłaszcza przy pierwszym uruchomieniu świeżej paczki.
+    for (let attempt = 0; attempt < 60; attempt++) {
+      if (await session.evaluate('document.readyState === "complete" && typeof window.MathNotesCore')) break;
+      await wait(250);
+    }
 
     // 1. Czy renderer w ogóle się wykonał i wpiął moduły.
     const wired = await session.evaluate(
@@ -137,6 +161,12 @@ async function main() {
     console.log('tytuł po narysowaniu kreski:', afterDraw);
     if (!afterDraw.trim().endsWith('•')) {
       problems.push('rysowanie nie zmieniło dokumentu (tytuł: ' + afterDraw + ')');
+    }
+
+    if (session.errors.length > 0) {
+      console.log('\nbłędy w konsoli aplikacji:');
+      for (const line of session.errors) console.log('  ' + line);
+      problems.push(session.errors.length + ' błędów w konsoli');
     }
 
     session.close();
