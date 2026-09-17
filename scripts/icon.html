@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8" /><style>html,body{margin:0;padding:0;background:transparent}canvas{display:block}</style></head>
+<body>
+<canvas id="c" width="1024" height="1024"></canvas>
+<script>
+(() => {
+  const c = document.getElementById('c');
+  const x = c.getContext('2d');
+  const S = 1024;
+
+  // Kafelek aplikacji: zaokrąglony kwadrat w proporcjach macOS, z zapasem
+  // na cień, który system dokłada sam.
+  const pad = 84;
+  const size = S - pad * 2;
+  const r = size * 0.235;
+
+  const round = (px, py, w, h, rad) => {
+    x.beginPath();
+    x.moveTo(px + rad, py);
+    x.arcTo(px + w, py, px + w, py + h, rad);
+    x.arcTo(px + w, py + h, px, py + h, rad);
+    x.arcTo(px, py + h, px, py, rad);
+    x.arcTo(px, py, px + w, py, rad);
+    x.closePath();
+  };
+
+  // Tło kartki — to samo, co widać w aplikacji.
+  const bg = x.createLinearGradient(pad, pad, pad, pad + size);
+  bg.addColorStop(0, '#17171c');
+  bg.addColorStop(1, '#050507');
+  round(pad, pad, size, size, r);
+  x.fillStyle = bg;
+  x.fill();
+
+  x.save();
+  round(pad, pad, size, size, r);
+  x.clip();
+
+  // Kratka w tle, w kolorze akcentu.
+  x.strokeStyle = '#4c8dff';
+  x.lineWidth = 2;
+  x.globalAlpha = 0.14;
+  const step = size / 9;
+  x.beginPath();
+  for (let i = 1; i < 9; i++) {
+    x.moveTo(pad + i * step, pad);
+    x.lineTo(pad + i * step, pad + size);
+    x.moveTo(pad, pad + i * step);
+    x.lineTo(pad + size, pad + i * step);
+  }
+  x.stroke();
+
+  // Grubsze linie co trzecie oczko — tak samo jak kratka w programie.
+  x.globalAlpha = 0.3;
+  x.lineWidth = 3;
+  x.beginPath();
+  for (let i = 3; i < 9; i += 3) {
+    x.moveTo(pad + i * step, pad);
+    x.lineTo(pad + i * step, pad + size);
+    x.moveTo(pad, pad + i * step);
+    x.lineTo(pad + size, pad + i * step);
+  }
+  x.stroke();
+  x.globalAlpha = 1;
+
+  // Odręczna kreska — sedno ikony, czytelna nawet w 32 px.
+  x.lineCap = 'round';
+  x.lineJoin = 'round';
+
+  x.strokeStyle = '#4c8dff';
+  x.lineWidth = 46;
+  x.globalAlpha = 0.85;
+  x.beginPath();
+  x.moveTo(pad + size * 0.2, pad + size * 0.74);
+  x.bezierCurveTo(
+    pad + size * 0.38, pad + size * 0.86,
+    pad + size * 0.5, pad + size * 0.7,
+    pad + size * 0.78, pad + size * 0.78,
+  );
+  x.stroke();
+
+  x.globalAlpha = 1;
+  x.strokeStyle = '#ffffff';
+  x.lineWidth = 62;
+  x.beginPath();
+  x.moveTo(pad + size * 0.2, pad + size * 0.48);
+  x.bezierCurveTo(
+    pad + size * 0.34, pad + size * 0.12,
+    pad + size * 0.52, pad + size * 0.64,
+    pad + size * 0.8, pad + size * 0.26,
+  );
+  x.stroke();
+
+  x.restore();
+
+  // Delikatna krawędź, żeby kafelek nie zlewał się z ciemnym tłem docka.
+  round(pad + 1, pad + 1, size - 2, size - 2, r - 1);
+  x.strokeStyle = 'rgba(255,255,255,0.09)';
+  x.lineWidth = 2;
+  x.stroke();
+
+  window.__icon = c.toDataURL('image/png');
+})();
+</script>
+</body>
+</html>

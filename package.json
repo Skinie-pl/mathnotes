@@ -1,21 +1,81 @@
 {
   "name": "mathnotes",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "description": "Offline notatnik matematyczny na tablet graficzny",
   "main": "main.js",
   "private": true,
   "scripts": {
     "start": "electron .",
     "test": "node --test",
-    "vendor": "node scripts/vendor.js"
+    "vendor": "node scripts/vendor.js",
+    "icon": "electron scripts/make-icon.js",
+    "dist:mac": "electron-builder --mac --arm64 --x64 && node scripts/arrange-dist.js",
+    "dist:win": "electron-builder --win --x64 && node scripts/arrange-dist.js",
+    "dist": "npm run dist:mac && npm run dist:win"
   },
   "devDependencies": {
     "electron": "44.4.1",
+    "electron-builder": "26.15.3",
     "esbuild": "0.28.2",
     "jspdf": "4.2.1",
     "lib0": "0.2.117",
     "y-protocols": "1.0.7",
     "y-webrtc": "10.3.0",
     "yjs": "13.6.32"
+  },
+  "author": {
+    "name": "skinny"
+  },
+  "build": {
+    "appId": "pl.skinny.mathnotes",
+    "productName": "MathNotes",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "notebook-file.js",
+      "index.html",
+      "renderer/**/*",
+      "!**/*.map"
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
   }
 }

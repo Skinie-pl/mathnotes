@@ -103,6 +103,43 @@ Bundle Collab nie jest minifikowany: to commitowany kod obcego pochodzenia,
 który ma dać się przejrzeć i zdiffować przy aktualizacji. jsPDF kopiujemy
 w postaci opublikowanej przez autora.
 
+## Budowanie paczek
+
+```bash
+npm run dist        # macOS (arm64 + x64) i Windows (x64)
+npm run dist:mac
+npm run dist:win
+npm run icon        # przerysowanie ikony po zmianie scripts/icon.html
+```
+
+Wynik trafia do `dist/` — dla każdej platformy folder gotowy do skopiowania
+oraz jego `.zip`:
+
+| Folder | Dla kogo |
+| --- | --- |
+| `MathNotes-<wersja>-mac-arm64` | macOS na Apple Silicon (M1 i nowsze) |
+| `MathNotes-<wersja>-mac-x64` | macOS na Intelu |
+| `MathNotes-<wersja>-win-x64` | Windows 64-bit, wersja przenośna bez instalatora |
+
+W każdym folderze leży `CZYTAJ TO.txt` z instrukcją uruchomienia. Paczki
+Windows buduje się z macOS bez wine — cel `dir` nie potrzebuje NSIS-a.
+
+Do `.asar` wchodzi tylko to, co aplikacja realnie ładuje (`files` w sekcji
+`build`): testy, skrypty buildów i dokumentacja zostają w repo.
+
+**Paczki nie są podpisane.** Bez certyfikatu Apple Developer ID macOS pokaże
+ostrzeżenie przy pierwszym uruchomieniu (prawy klik → Otwórz), a Windows
+SmartScreen poprosi o potwierdzenie. To jest kwestia kupienia certyfikatów,
+nie kodu.
+
+### Ikona
+
+`build/icon.png` (1024×1024) jest **rysowany kodem** — `scripts/icon.html`
+rysuje go na canvasie, a `scripts/make-icon.js` renderuje offscreen w Electronie
+i zapisuje PNG. Dzięki temu nie ma w repo zależności graficznej ani binarnego
+pliku, którego nie da się zdiffować. `.icns` i `.ico` generuje z tego
+electron-builder.
+
 ## Format pliku
 
 Plik notatnika to JSON z polem `version`, **spakowany gzipem**. Nazwa nadal
