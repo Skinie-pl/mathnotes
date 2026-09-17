@@ -1,479 +1,182 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="pl">
-  <head>
-    <meta charset="utf-8" />
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' wss: stun: turn: turns:"
-    />
-    <title>MathNotes</title>
-    <style>
-      :root {
-        --bg: #0b0b0c;
-        --page: #000000;
-        --rail: #131316;
-        --line: #26262b;
-        --ink: #e8e8ea;
-        --dim: #8a8a93;
-        --accent: #4c8dff;
-        --flyout: #1c1c21;
-      }
+<head>
+<meta charset="UTF-8" />
+<meta
+  http-equiv="Content-Security-Policy"
+  content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' wss: stun: turn: turns:"
+/>
+<title>MathNotes</title>
+<link rel="stylesheet" href="renderer/style.css" />
+</head>
+<body>
+  <div id="left-toolbar">
+    <button id="tool-pen" class="tool-btn active" title="Pióro (P) — przytrzymaj, aby wybrać rodzaj pędzla">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l1.5-5.5L16 3.5a1.5 1.5 0 0 1 2 0l1.5 1.5a1.5 1.5 0 0 1 0 2L9 17.5 4 20z"/><path d="M14 6l3 3"/></svg>
+    </button>
+    <button id="tool-eraser" class="tool-btn" title="Gumka (E) — przytrzymaj, aby wybrać tryb kasowania">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13l-7 7H5l-2-2a2 2 0 0 1 0-2.8L14 4l6 6-2 3z"/><path d="M9 20H4"/></svg>
+    </button>
+    <button id="tool-cursor" class="tool-btn" title="Kursor (V) — przesuwanie i skalowanie obiektów">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M4 2l16 7-6.5 2L11 18z"/></svg>
+    </button>
 
-      * {
-        box-sizing: border-box;
-      }
+    <div class="toolbar-sep"></div>
 
-      html,
-      body {
-        height: 100%;
-        margin: 0;
-        overflow: hidden;
-        background: var(--bg);
-        color: var(--ink);
-        font: 13px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif;
-        user-select: none;
-        -webkit-user-select: none;
-        cursor: default;
-      }
+    <button id="color-btn" class="tool-btn" title="Kolor">
+      <span id="color-swatch-preview" class="swatch-dot"></span>
+    </button>
+    <button id="width-btn" class="tool-btn" title="Grubość">
+      <svg viewBox="0 0 24 24" width="20" height="20"><rect x="3" y="5" width="18" height="1.5" rx="0.75" fill="currentColor"/><rect x="3" y="11" width="18" height="3" rx="1.5" fill="currentColor"/><rect x="3" y="17.5" width="18" height="4.5" rx="2.25" fill="currentColor"/></svg>
+    </button>
+    <button id="pressure-toggle" class="tool-btn" title="Zmienna grubość wg nacisku pióra">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 18a8 8 0 0 1 16 0"/><path d="M12 18l4-6"/></svg>
+    </button>
 
-      #app {
-        display: flex;
-        height: 100%;
-      }
+    <div class="toolbar-sep"></div>
 
-      /* --- Wąski toolbar po lewej. Żadnych pasków u góry. ------------------ */
+    <button id="add-bookmark" class="tool-btn" title="Dodaj adnotację (B)">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M6 3h12v18l-6-4-6 4V3z"/></svg>
+    </button>
+    <button id="undo-btn" class="tool-btn" title="Cofnij">↶</button>
+    <button id="redo-btn" class="tool-btn" title="Ponów">↷</button>
 
-      #toolbar {
-        flex: 0 0 52px;
-        background: var(--rail);
-        border-right: 1px solid var(--line);
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 4px;
-        padding: 8px 0;
-        z-index: 3;
-      }
+    <div class="toolbar-sep"></div>
 
-      .tool {
-        width: 38px;
-        height: 38px;
-        border: 1px solid transparent;
-        border-radius: 9px;
-        background: transparent;
-        color: var(--dim);
-        display: grid;
-        place-items: center;
-        cursor: pointer;
-        padding: 0;
-        touch-action: none;
-      }
+    <button id="scroll-top-btn" class="tool-btn" title="Przewiń na sam początek">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6"/><path d="M6 11l6-6 6 6"/></svg>
+    </button>
+    <button id="scroll-bottom-btn" class="tool-btn" title="Przewiń na sam koniec">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v13"/><path d="M6 13l6 6 6-6"/></svg>
+    </button>
 
-      .tool:hover {
-        color: var(--ink);
-        background: #ffffff0d;
-      }
+    <button id="zoom-indicator" title="Kliknij, aby zresetować powiększenie do 100%">100%</button>
 
-      .tool[aria-pressed="true"] {
-        color: var(--ink);
-        background: #ffffff14;
-        border-color: #ffffff1f;
-      }
+    <button id="online-status-btn" class="tool-btn online-status-offline" title="Sesja online: wyłączona">
+      <span class="online-dot"></span>
+    </button>
+  </div>
 
-      .tool:disabled {
-        opacity: 0.3;
-        cursor: default;
-      }
+  <div id="main-area">
+    <canvas id="canvas"></canvas>
+    <!-- Kursory innych osób. Nazwy wstawiane wyłącznie przez textContent. -->
+    <div id="peers"></div>
+  </div>
 
-      .tool svg {
-        width: 20px;
-        height: 20px;
-        fill: none;
-        stroke: currentColor;
-        stroke-width: 1.6;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-      }
+  <div id="brush-flyout" class="flyout hidden">
+    <button class="flyout-option" data-brush="pen">Zwykły</button>
+    <button class="flyout-option" data-brush="soft">Miękki</button>
+  </div>
+  <div id="eraser-flyout" class="flyout hidden">
+    <button class="flyout-option" data-erase="object">Obiekty</button>
+    <button class="flyout-option" data-erase="area">Obszar</button>
+  </div>
+  <div id="color-flyout" class="flyout hidden">
+    <div id="color-palette-grid"></div>
+    <div class="flyout-hint">Klik = wybierz. Prawy klik = zmień kolor slotu.</div>
+  </div>
+  <div id="width-flyout" class="flyout hidden">
+    <input id="width-slider" type="range" min="1" max="30" value="4" />
+    <span id="width-label">4px</span>
+  </div>
 
-      .rail-gap {
-        height: 10px;
-      }
+  <input type="color" id="color-picker-hidden" class="visually-hidden" />
 
-      /* Kropka na narzędziu pokazuje jego bieżący kolor, bez otwierania flyoutu. */
-      .swatch {
-        position: absolute;
-        right: 5px;
-        bottom: 5px;
-        width: 7px;
-        height: 7px;
-        border-radius: 50%;
-        border: 1px solid #00000080;
-      }
-
-      .tool-wrap {
-        position: relative;
-      }
-
-      /* --- Flyout: warianty narzędzia, otwierany przytrzymaniem ------------ */
-
-      #flyout {
-        position: absolute;
-        left: 56px;
-        z-index: 5;
-        background: var(--flyout);
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        padding: 10px;
-        box-shadow: 0 12px 32px #000000a6;
-        display: none;
-        min-width: 168px;
-      }
-
-      #flyout[data-open="true"] {
-        display: block;
-      }
-
-      .flyout-label {
-        color: var(--dim);
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        margin: 2px 0 6px;
-      }
-
-      .flyout-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-        margin-bottom: 10px;
-      }
-
-      .flyout-row:last-child {
-        margin-bottom: 0;
-      }
-
-      .chip {
-        border: 1px solid var(--line);
-        background: #ffffff08;
-        color: var(--ink);
-        border-radius: 8px;
-        padding: 5px 9px;
-        font: inherit;
-        font-size: 12px;
-        cursor: pointer;
-      }
-
-      .chip[aria-pressed="true"] {
-        border-color: var(--accent);
-        background: #4c8dff26;
-      }
-
-      .color {
-        width: 26px;
-        height: 26px;
-        border-radius: 50%;
-        border: 2px solid transparent;
-        cursor: pointer;
-        padding: 0;
-      }
-
-      .color[aria-pressed="true"] {
-        border-color: var(--ink);
-      }
-
-      .size {
-        width: 30px;
-        height: 26px;
-        display: grid;
-        place-items: center;
-      }
-
-      .size i {
-        display: block;
-        background: currentColor;
-        border-radius: 99px;
-      }
-
-      /* --- Kartka: stała szerokość, przewijanie tylko w pionie ------------- */
-
-      #surface {
-        flex: 1;
-        position: relative;
-        overflow-x: hidden;
-        overflow-y: auto;
-        background: var(--bg);
-      }
-
-      /* Canvas zostaje przyklejony na wierzchu, a #spacer daje pasek przewijania
-         o właściwej długości — dzięki temu przewijanie jest natywne, a rysujemy
-         tylko to, co widać. */
-      #viewport {
-        position: sticky;
-        top: 0;
-        height: 100%;
-        z-index: 1;
-      }
-
-      #canvas {
-        display: block;
-        width: 100%;
-        height: 100%;
-        touch-action: none;
-      }
-
-      #spacer {
-        width: 1px;
-      }
-
-      /* Kursory innych osób. Nazwy wstawiane wyłącznie przez textContent. */
-      #peers {
-        position: absolute;
-        inset: 0;
-        overflow: hidden;
-        pointer-events: none;
-        z-index: 2;
-      }
-
-      .peer {
-        position: absolute;
-        display: flex;
-        align-items: center;
-        gap: 5px;
-        transform: translate(-4px, -4px);
-      }
-
-      .peer-dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        box-shadow: 0 0 0 2px #000000b3;
-        flex: 0 0 auto;
-      }
-
-      .peer-name {
-        font-size: 11px;
-        line-height: 1.5;
-        padding: 1px 6px;
-        border-radius: 6px;
-        color: #101014;
-        white-space: nowrap;
-        max-width: 160px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      /* Liczba osób w sesji, na przycisku online. */
-      .badge {
-        position: absolute;
-        right: 2px;
-        bottom: 2px;
-        min-width: 15px;
-        height: 15px;
-        padding: 0 3px;
-        border-radius: 8px;
-        background: var(--accent);
-        color: #fff;
-        font-size: 10px;
-        line-height: 15px;
-        text-align: center;
-        display: none;
-      }
-
-      .badge[data-on="true"] {
-        display: block;
-      }
-
-      /* --- Panele: sesja online, dołączanie, ustawienia ------------------- */
-
-      #modal-backdrop {
-        position: fixed;
-        inset: 0;
-        background: #000000ad;
-        z-index: 10;
-        display: none;
-        align-items: center;
-        justify-content: center;
-      }
-
-      #modal-backdrop[data-open="true"] {
-        display: flex;
-      }
-
-      #modal {
-        background: var(--flyout);
-        border: 1px solid var(--line);
-        border-radius: 14px;
-        padding: 18px;
-        min-width: 400px;
-        max-width: 540px;
-        box-shadow: 0 24px 60px #000000cc;
-      }
-
-      #modal h2 {
-        margin: 0 0 6px;
-        font-size: 15px;
-        font-weight: 600;
-      }
-
-      #modal p {
-        color: var(--dim);
-        font-size: 12px;
-        line-height: 1.55;
-        margin: 0 0 4px;
-      }
-
-      #modal label {
-        display: block;
-        color: var(--dim);
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        margin: 14px 0 5px;
-      }
-
-      #modal input,
-      #modal textarea {
-        width: 100%;
-        background: #00000059;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        color: var(--ink);
-        font: inherit;
-        padding: 7px 9px;
-        user-select: text;
-        -webkit-user-select: text;
-      }
-
-      #modal textarea {
-        resize: vertical;
-        min-height: 66px;
-      }
-
-      .modal-actions {
-        display: flex;
-        gap: 8px;
-        justify-content: flex-end;
-        margin-top: 18px;
-      }
-
-      .btn {
-        border: 1px solid var(--line);
-        background: #ffffff0d;
-        color: var(--ink);
-        border-radius: 9px;
-        padding: 7px 14px;
-        font: inherit;
-        cursor: pointer;
-      }
-
-      .btn:hover {
-        background: #ffffff1a;
-      }
-
-      .btn-primary {
-        border-color: var(--accent);
-        background: #4c8dff33;
-      }
-
-      .code {
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
-      }
-
-      .choice {
-        display: flex;
-        gap: 8px;
-        align-items: flex-start;
-        margin: 8px 0;
-        color: var(--ink);
-        font-size: 12px;
-        cursor: pointer;
-      }
-
-      .choice input {
-        width: auto;
-        margin-top: 2px;
-      }
-
-      .choice span {
-        color: var(--dim);
-        display: block;
-        margin-top: 2px;
-      }
-
-      /* Kursor gumki to okrąg dokładnie w rozmiarze promienia kasowania —
-         nigdy generyczny crosshair dla akcji, która ma zasięg. */
-      #eraser-cursor {
-        position: fixed;
-        z-index: 4;
-        border: 1.5px solid #ffffffcc;
-        border-radius: 50%;
-        pointer-events: none;
-        display: none;
-        mix-blend-mode: difference;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="app">
-      <aside id="toolbar">
-        <div class="tool-wrap">
-          <button class="tool" id="tool-pen" data-tool="pen" aria-pressed="true" title="Pióro — przytrzymaj, żeby zmienić pędzel, kolor i grubość">
-            <svg viewBox="0 0 24 24"><path d="M4 20l4-1 10-10-3-3L5 16l-1 4z" /><path d="M14 6l3 3" /></svg>
-          </button>
-          <span class="swatch" id="swatch-pen"></span>
-        </div>
-
-        <div class="tool-wrap">
-          <button class="tool" id="tool-highlighter" data-tool="highlighter" aria-pressed="false" title="Zakreślacz — przytrzymaj, żeby zmienić kolor i grubość">
-            <svg viewBox="0 0 24 24"><path d="M7 15l5-9 5 3-5 9H8z" /><path d="M5 21h9" /></svg>
-          </button>
-          <span class="swatch" id="swatch-highlighter"></span>
-        </div>
-
-        <button class="tool" id="tool-eraser" data-tool="eraser" aria-pressed="false" title="Gumka — przytrzymaj, żeby zmienić tryb i rozmiar">
-          <svg viewBox="0 0 24 24"><path d="M8 18H5l-2-3 9-9 6 6-6 6z" /><path d="M14 20h6" /></svg>
-        </button>
-
-        <div class="rail-gap"></div>
-
-        <button class="tool" id="btn-undo" title="Cofnij" disabled>
-          <svg viewBox="0 0 24 24"><path d="M9 7L4 12l5 5" /><path d="M4 12h9a6 6 0 010 12h-1" /></svg>
-        </button>
-
-        <button class="tool" id="btn-redo" title="Ponów" disabled>
-          <svg viewBox="0 0 24 24"><path d="M15 7l5 5-5 5" /><path d="M20 12h-9a6 6 0 000 12h1" /></svg>
-        </button>
-
-        <div class="rail-gap"></div>
-
-        <div class="tool-wrap">
-          <button class="tool" id="btn-online" title="Sesja online">
-            <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3" /><path d="M3 20a6 6 0 0112 0" /><path d="M16 6a3 3 0 010 6" /><path d="M18 20a5 5 0 00-2-4" /></svg>
-          </button>
-          <span class="badge" id="online-badge"></span>
-        </div>
-      </aside>
-
-      <div id="flyout" role="dialog" aria-label="Warianty narzędzia"></div>
-
-      <div id="surface">
-        <div id="viewport">
-          <canvas id="canvas"></canvas>
-          <div id="peers"></div>
-        </div>
-        <div id="spacer"></div>
+  <div id="modal-overlay" class="modal-hidden">
+    <div id="modal-box">
+      <div class="modal-title">Nowa adnotacja</div>
+      <input id="modal-input" type="text" placeholder="Nazwa adnotacji" autocomplete="off" />
+      <div class="modal-actions">
+        <button id="modal-cancel">Anuluj</button>
+        <button id="modal-ok">Dodaj</button>
       </div>
     </div>
+  </div>
 
-    <div id="eraser-cursor"></div>
-    <div id="modal-backdrop"><div id="modal" role="dialog" aria-modal="true"></div></div>
+  <div id="annotation-list-overlay" class="modal-hidden">
+    <div id="annotation-list-box">
+      <div class="modal-title">Adnotacje</div>
+      <ul id="annotation-list"></ul>
+      <div class="modal-actions">
+        <button id="annotation-list-close">Zamknij</button>
+      </div>
+    </div>
+  </div>
 
-    <!-- Zvendorowany Yjs + y-webrtc. Budowany przez `npm run vendor`, commitowany do repo. -->
-    <script src="renderer/vendor/collab.bundle.js"></script>
-    <script src="renderer/core.js"></script>
-    <script src="renderer/doc.js"></script>
-    <script src="renderer/online.js"></script>
-    <script src="renderer.js"></script>
-  </body>
+  <div id="online-join-overlay" class="modal-hidden">
+    <div id="online-join-box">
+      <div class="modal-title">Dołącz do sesji online</div>
+      <input id="online-join-input" type="text" placeholder="Kod zaproszenia" autocomplete="off" spellcheck="false" />
+      <div id="online-join-mode">
+        <label class="choice">
+          <input type="radio" name="join-mode" id="join-mode-fresh" checked />
+          <span>Otwórz sesję jako nowy notatnik<em>Twoje obecne notatki zostają na dysku i nie trafiają do nikogo.</em></span>
+        </label>
+        <label class="choice">
+          <input type="radio" name="join-mode" id="join-mode-merge" />
+          <span>Scal bieżący notatnik z sesją<em>Wszystko, co masz teraz na kartce, zobaczą pozostali uczestnicy.</em></span>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button id="online-join-cancel">Anuluj</button>
+        <button id="online-join-ok">Dołącz</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="online-share-overlay" class="modal-hidden">
+    <div id="online-share-box">
+      <div class="modal-title">Sesja online</div>
+      <div id="online-share-status">Uruchamianie…</div>
+      <div id="online-share-code-row">
+        <input id="online-share-code" type="text" readonly />
+        <button id="online-share-copy">Kopiuj</button>
+      </div>
+      <div id="online-share-hint">Podaj ten kod drugiej osobie — wybiera „Dołącz do sesji” i go wkleja. Maks. 10 osób naraz. Kod nie jest nigdzie zapisywany i znika razem z sesją.</div>
+      <div class="modal-actions">
+        <button id="online-share-settings">Ustawienia</button>
+        <button id="online-share-end">Zakończ sesję</button>
+        <button id="online-share-close">Zamknij</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="online-settings-overlay" class="modal-hidden">
+    <div id="online-settings-box">
+      <div class="modal-title">Ustawienia połączenia</div>
+      <div class="settings-hint">Serwer sygnalizacyjny służy tylko do odnalezienia się nawzajem — treść notatnika nigdy przez niego nie przechodzi. TURN przydaje się w sieciach blokujących połączenia bezpośrednie. Te ustawienia zostają na tym komputerze i nie trafiają do pliku notatnika.</div>
+      <label for="settings-signaling">Serwery sygnalizacyjne (po jednym w linii, tylko wss://)</label>
+      <textarea id="settings-signaling" spellcheck="false"></textarea>
+      <label for="settings-turn-url">TURN — adres (opcjonalny)</label>
+      <input id="settings-turn-url" type="text" placeholder="turns:przyklad.pl:5349" spellcheck="false" />
+      <label for="settings-turn-user">TURN — użytkownik</label>
+      <input id="settings-turn-user" type="text" autocomplete="off" />
+      <label for="settings-turn-pass">TURN — hasło</label>
+      <input id="settings-turn-pass" type="password" autocomplete="off" />
+      <div class="modal-actions">
+        <button id="online-settings-cancel">Anuluj</button>
+        <button id="online-settings-save">Zapisz</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="keymap-overlay" class="modal-hidden">
+    <div id="keymap-box">
+      <div class="modal-title">Skróty klawiszowe</div>
+      <div id="keymap-list"></div>
+      <div class="modal-actions">
+        <button id="keymap-reset">Przywróć domyślne</button>
+        <button id="keymap-close">Zamknij</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer/vendor/jspdf.umd.min.js"></script>
+  <!-- Zvendorowany Yjs + y-webrtc. Budowany przez `npm run vendor`, commitowany do repo. -->
+  <script src="renderer/vendor/collab.bundle.js"></script>
+  <script src="renderer/core.js"></script>
+  <script src="renderer/doc.js"></script>
+  <script src="renderer/online.js"></script>
+  <script src="renderer.js"></script>
+</body>
 </html>

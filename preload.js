@@ -5,12 +5,13 @@
 //
 // Zwróć uwagę, czego tu NIE MA: żadna metoda nie przyjmuje ścieżki pliku.
 // Ścieżki biorą się w main.js z natywnych dialogów albo z listy ostatnich
-// plików systemu, nigdy z tekstu od renderera czy z sesji online.
+// plików, którą również trzyma proces główny — nigdy z tekstu od renderera
+// czy z sesji online.
 const { contextBridge, ipcRenderer } = require('electron');
 
 function subscribe(channel, handler, unwrap) {
   if (typeof handler !== 'function') throw new TypeError(channel + ': oczekiwano funkcji');
-  const listener = (_event, payload) => unwrap(handler, payload);
+  const listener = (_event, ...args) => unwrap(handler, ...args);
   ipcRenderer.on(channel, listener);
   return () => ipcRenderer.removeListener(channel, listener);
 }
@@ -18,8 +19,8 @@ function subscribe(channel, handler, unwrap) {
 contextBridge.exposeInMainWorld('api', {
   /** Akcje z natywnego menu. Zwraca funkcję odsubskrybowującą. */
   onMenu(handler) {
-    return subscribe('menu', handler, (fn, action) => {
-      if (typeof action === 'string') fn(action);
+    return subscribe('menu', handler, (fn, action, payload) => {
+      if (typeof action === 'string') fn(action, payload);
     });
   },
 
@@ -45,14 +46,19 @@ contextBridge.exposeInMainWorld('api', {
     return ipcRenderer.invoke('notebook:save', { state, saveAs: saveAs === true });
   },
 
+  /** Cichy zapis w tle do już znanego pliku. Bez dialogów i bez błędów na wierzchu. */
+  autosave(state) {
+    return ipcRenderer.invoke('notebook:autosave', { state });
+  },
+
   /** Zapomina bieżącą ścieżkę, żeby następny zapis zapytał o nową. */
   newNotebook() {
     return ipcRenderer.invoke('notebook:new');
   },
 
-  /** @returns {Promise<{dataUrl: string} | {canceled: true, reason?: string}>} */
-  pickImage() {
-    return ipcRenderer.invoke('image:pick');
+  /** @returns {Promise<{name: string} | {canceled: true}>} */
+  savePdf(data, suggestedName) {
+    return ipcRenderer.invoke('pdf:save', { data, suggestedName });
   },
 
   /** Kopiuje krótki tekst (kod zaproszenia) do schowka systemowego. */

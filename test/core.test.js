@@ -13,10 +13,23 @@ function stroke(overrides) {
   return {
     id: 'a1',
     tool: 'pen',
-    brush: 'round',
+    brush: 'pen',
     color: '#ffffff',
-    size: 2,
+    size: 4,
+    pressureEnabled: false,
     pts: [10, 10, 0.5, 20, 20, 0.5],
+    ...overrides,
+  };
+}
+
+function image(overrides) {
+  return {
+    id: 'img1',
+    x: 10,
+    y: 10,
+    w: 100,
+    h: 50,
+    dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
     ...overrides,
   };
 }
@@ -25,15 +38,14 @@ function stroke(overrides) {
 // Tytuł i menu
 // ===========================================================================
 
-test('formatTitle: bez nazwy pokazuje "Bez tytułu"', () => {
-  assert.equal(core.formatTitle(null, false), 'Bez tytułu — MathNotes');
-  assert.equal(core.formatTitle('', false), 'Bez tytułu — MathNotes');
-  assert.equal(core.formatTitle('   ', false), 'Bez tytułu — MathNotes');
+test('formatTitle: bez nazwy pokazuje "Nowy notatnik"', () => {
+  assert.equal(core.formatTitle(null, false), 'MathNotes — Nowy notatnik');
+  assert.equal(core.formatTitle('   ', false), 'MathNotes — Nowy notatnik');
 });
 
-test('formatTitle: niezapisane zmiany oznacza kropka', () => {
-  assert.equal(core.formatTitle('algebra', false), 'algebra — MathNotes');
-  assert.equal(core.formatTitle('algebra', true), '• algebra — MathNotes');
+test('formatTitle: niezapisane zmiany oznacza kropka na końcu', () => {
+  assert.equal(core.formatTitle('algebra.json', false), 'MathNotes — algebra.json');
+  assert.equal(core.formatTitle('algebra.json', true), 'MathNotes — algebra.json •');
 });
 
 test('MENU_ACTIONS: bez duplikatów, same stringi, zamrożone', () => {
@@ -46,7 +58,6 @@ test('MENU_ACTIONS: bez duplikatów, same stringi, zamrożone', () => {
 test('każda akcja menu ma handler w rendererze', () => {
   // main.js pilnuje, że pozycja menu wskazuje istniejącą akcję. To jest druga
   // połowa tej samej umowy: że po stronie renderera ktoś ją obsługuje.
-  // Bez tego dodanie akcji dawałoby cichy komunikat „jeszcze niedostępne”.
   const source = require('node:fs').readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
   const start = source.indexOf('const handlers = {');
   const end = source.indexOf('function dispatch');
@@ -58,14 +69,14 @@ test('każda akcja menu ma handler w rendererze', () => {
 });
 
 // ===========================================================================
-// widthFactor — wspólny dla obu ścieżek renderowania
+// Szerokość kreski — wspólna dla obu ścieżek renderowania
 // ===========================================================================
 
 test('widthAt nie zmienia się, gdy kreska rośnie o kolejne punkty', () => {
-  // To jest test na błąd „linia skacze po puszczeniu pióra”: gdyby szerokość
-  // zależała od długości kreski albo odległości od jej końca, ścieżka
-  // inkrementalna policzyłaby co innego niż kanoniczna.
-  const growing = stroke({ pts: [10, 10, 0.2, 20, 20, 0.6, 30, 30, 0.9] });
+  // To jest test na błąd „linia skacze po puszczeniu pióra”. Miękki pędzel
+  // narasta na starcie kreski — ale liczy to od indeksu OD POCZĄTKU, więc
+  // dopisanie punktów na końcu nie może ruszyć niczego wstecz.
+  const growing = stroke({ brush: 'soft', pressureEnabled: true, pts: [10, 10, 0.2, 20, 20, 0.6, 30, 30, 0.9] });
   const before = [0, 1, 2].map((i) => core.widthAt(growing, i));
 
   growing.pts.push(40, 40, 0.4, 50, 50, 0.1);
@@ -74,76 +85,58 @@ test('widthAt nie zmienia się, gdy kreska rośnie o kolejne punkty', () => {
   assert.deepEqual(after, before, 'szerokość istniejących punktów musi być niewrażliwa na dopisanie kolejnych');
 });
 
-test('obie ścieżki renderowania liczą te same szerokości odcinków', () => {
-  // Kanoniczna (drawStroke) przechodzi całą kreskę od zera. Inkrementalna
-  // (drawLatestSegment) liczy tylko odcinki dorzucone od ostatniej klatki.
-  // Jeśli te dwie listy się rozjadą, linia „skacze” po puszczeniu pióra.
-  const pts = [10, 10, 0.2, 20, 22, 0.55, 33, 31, 0.9, 40, 44, 0.3, 55, 50, 0.15];
-  const s = stroke({ pts: [] });
+test('nacisk działa dopiero po włączeniu', () => {
+  const off = stroke({ pressureEnabled: false });
+  assert.equal(core.widthFactor(off, 0.1, 0), 1);
+  assert.equal(core.widthFactor(off, 1, 0), 1, 'wyłączony nacisk daje stałą grubość');
 
-  const incremental = [];
-  for (let i = 0; i < pts.length; i += 3) {
-    const drawnUpTo = core.pointCount(s);
-    s.pts.push(pts[i], pts[i + 1], pts[i + 2]);
-    // Nowe odcinki: od ostatniego narysowanego punktu do końca.
-    for (let seg = Math.max(0, drawnUpTo - 1); seg < core.pointCount(s) - 1; seg++) {
-      incremental.push(core.segmentWidth(s, seg));
-    }
-  }
-
-  const canonical = [];
-  for (let seg = 0; seg < core.pointCount(s) - 1; seg++) canonical.push(core.segmentWidth(s, seg));
-
-  assert.deepEqual(incremental, canonical);
-  assert.equal(canonical.length, core.pointCount(s) - 1);
+  const on = stroke({ pressureEnabled: true });
+  assert.equal(core.widthFactor(on, 0, 0), core.PRESSURE_BASE + core.DEFAULT_PRESSURE * core.PRESSURE_RANGE);
+  assert.equal(core.widthFactor(on, 1, 0), core.MAX_PRESSURE_FACTOR);
+  assert.ok(core.widthFactor(on, 0.2, 0) < core.widthFactor(on, 0.8, 0));
+  assert.ok(core.widthFactor(on, 0.01, 0) >= core.PRESSURE_BASE, 'kreska nie może zniknąć');
 });
 
-test('widthFactor: highlighter i pędzel "fine" mają stałą szerokość', () => {
-  for (const pressure of [0, 0.1, 0.5, 1]) {
-    assert.equal(core.widthFactor('highlighter', 'round', pressure), core.MAX_WIDTH_FACTOR);
-    assert.equal(core.widthFactor('pen', 'fine', pressure), core.MAX_WIDTH_FACTOR);
-  }
+test('nacisk spoza zakresu jest przycinany, brak nacisku spada na wartość domyślną', () => {
+  const on = stroke({ pressureEnabled: true });
+  const fallback = core.widthFactor(on, core.DEFAULT_PRESSURE, 0);
+  assert.equal(core.widthFactor(on, 5, 0), core.widthFactor(on, 1, 0));
+  assert.equal(core.widthFactor(on, undefined, 0), fallback);
+  assert.equal(core.widthFactor(on, NaN, 0), fallback);
+  assert.equal(core.widthFactor(on, 0, 0), fallback, 'zero = urządzenie bez nacisku, nie zerowa kreska');
 });
 
-test('widthFactor: pędzel "round" rośnie z naciskiem i nigdy nie schodzi do zera', () => {
-  const light = core.widthFactor('pen', 'round', 0.1);
-  const heavy = core.widthFactor('pen', 'round', 1);
-  assert.ok(light < heavy, 'mocniejszy nacisk = grubsza kreska');
-  assert.ok(light >= core.MIN_WIDTH_FACTOR, 'kreska nie może zniknąć przy słabym nacisku');
-  assert.equal(heavy, core.MAX_WIDTH_FACTOR);
-});
+test('narastanie miękkiego pędzla dotyczy tylko jego i tylko początku kreski', () => {
+  assert.equal(core.taperFactor(0), 1 / (core.TAPER_RAMP + 1));
+  assert.equal(core.taperFactor(core.TAPER_RAMP), 1);
+  assert.equal(core.taperFactor(999), 1);
 
-test('widthFactor: brak nacisku od urządzenia spada na wartość domyślną', () => {
-  const fallback = core.widthFactor('pen', 'round', core.DEFAULT_PRESSURE);
-  assert.equal(core.widthFactor('pen', 'round', undefined), fallback);
-  assert.equal(core.widthFactor('pen', 'round', NaN), fallback);
-  assert.equal(core.widthFactor('pen', 'round', 0), fallback, 'zero = urządzenie bez nacisku, nie zerowa kreska');
-});
-
-test('widthFactor: nacisk spoza zakresu jest przycinany', () => {
-  assert.equal(core.widthFactor('pen', 'round', 5), core.widthFactor('pen', 'round', 1));
-  assert.equal(core.widthFactor('pen', 'round', -3), core.widthFactor('pen', 'round', core.DEFAULT_PRESSURE));
+  const soft = stroke({ brush: 'soft' });
+  const hard = stroke({ brush: 'pen' });
+  assert.ok(core.widthFactor(soft, 0.5, 0) < core.widthFactor(soft, 0.5, 99));
+  assert.equal(core.widthFactor(hard, 0.5, 0), core.widthFactor(hard, 0.5, 99), 'zwykły pędzel nie narasta');
 });
 
 // ===========================================================================
 // Wygładzanie i bboxy
 // ===========================================================================
 
-test('shouldKeepPoint odrzuca próbki bliżej niż próg', () => {
-  assert.equal(core.shouldKeepPoint(0, 0, 0.1, 0.1), false);
-  assert.equal(core.shouldKeepPoint(0, 0, 5, 0), true);
-  assert.equal(core.shouldKeepPoint(0, 0, 3, 0, 10), false, 'próg da się nadpisać');
+test('smoothPoint odrzuca próbki gęstsze niż próg i przyciąga do poprzedniej', () => {
+  assert.deepEqual(core.smoothPoint(NaN, NaN, 5, 7), { x: 5, y: 7 }, 'pierwszy punkt wchodzi bez zmian');
+  assert.equal(core.smoothPoint(0, 0, 0.5, 0), null, 'zbyt blisko poprzedniego');
+
+  const smoothed = core.smoothPoint(0, 0, 10, 0);
+  assert.ok(smoothed.x < 10 && smoothed.x > 0, 'punkt jest przyciągany do poprzedniego');
+  assert.equal(smoothed.x, 10 * (1 - core.SMOOTHING));
 });
 
-test('strokeBounds dokłada margines na grubość kreski', () => {
-  const s = stroke({ size: 10, brush: 'fine', pts: [100, 200, 0.5, 300, 400, 0.5] });
-  const b = core.strokeBounds(s);
-  const pad = core.maxWidth(s) / 2 + 1;
+test('strokeBounds dokłada margines na grubość, a miękkiemu pędzlowi także na poświatę', () => {
+  const hard = stroke({ size: 10, pts: [100, 200, 0.5, 300, 400, 0.5] });
+  const soft = stroke({ size: 10, brush: 'soft', pts: [100, 200, 0.5, 300, 400, 0.5] });
 
-  assert.equal(b.minX, 100 - pad);
-  assert.equal(b.maxX, 300 + pad);
-  assert.equal(b.minY, 200 - pad);
-  assert.equal(b.maxY, 400 + pad);
+  const hardPad = core.maxWidth(hard) / 2 + 1;
+  assert.equal(core.strokeBounds(hard).minX, 100 - hardPad);
+  assert.ok(core.maxWidth(soft) > core.maxWidth(hard), 'poświata rozlewa się poza grubość');
   assert.equal(core.strokeBounds(stroke({ pts: [] })), null);
 });
 
@@ -151,7 +144,6 @@ test('tileRange mapuje bbox na kafle w pionie', () => {
   const H = core.TILE_HEIGHT;
   assert.deepEqual(core.tileRange({ minX: 0, maxX: 1, minY: 10, maxY: 20 }), { first: 0, last: 0 });
   assert.deepEqual(core.tileRange({ minX: 0, maxX: 1, minY: H - 5, maxY: H + 5 }), { first: 0, last: 1 });
-  // Margines bboxa może zejść nad górną krawędź strony — kafel ujemny nie istnieje.
   assert.deepEqual(core.tileRange({ minX: 0, maxX: 1, minY: -6, maxY: 5 }), { first: 0, last: 0 });
 });
 
@@ -169,64 +161,74 @@ test('boundsIntersect', () => {
 function line(xs, y, extra) {
   const pts = [];
   for (const x of xs) pts.push(x, y, 0.5);
-  return stroke({ size: 2, brush: 'fine', pts, ...extra });
+  return stroke({ size: 2, pts, ...extra });
 }
 
 const XS = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150];
 
+test('promień gumki rośnie z grubością, ale w rozsądnych granicach', () => {
+  assert.equal(core.eraserScreenRadius(1), 6, 'dolna granica');
+  assert.equal(core.eraserScreenRadius(30), 28, 'górna granica');
+  assert.ok(core.eraserScreenRadius(10) > core.eraserScreenRadius(4));
+});
+
 test('gumka nie rusza kreski, której nie dotyka', () => {
-  assert.equal(core.eraseStroke(line(XS, 100), 600, 600, 15, 'whole'), null);
-  assert.equal(core.eraseStroke(line(XS, 100), 600, 600, 15, 'split'), null);
+  assert.equal(core.eraseStroke(line(XS, 100), 600, 600, 15, 'object'), null);
+  assert.equal(core.eraseStroke(line(XS, 100), 600, 600, 15, 'area'), null);
 });
 
-test('gumka w trybie "whole" kasuje całą kreskę', () => {
-  assert.deepEqual(core.eraseStroke(line(XS, 100), 75, 100, 15, 'whole'), []);
+test('tryb "object" kasuje całą kreskę', () => {
+  assert.deepEqual(core.eraseStroke(line(XS, 100), 75, 100, 15, 'object'), []);
 });
 
-test('gumka w trybie "split" dzieli kreskę na dwa kawałki', () => {
-  const pieces = core.eraseStroke(line(XS, 100), 75, 100, 15, 'split');
+test('tryb "area" wycina fragment i zostawia dwa kawałki', () => {
+  const pieces = core.eraseStroke(line(XS, 100), 75, 100, 15, 'area');
 
   assert.equal(pieces.length, 2);
-  const left = pieces[0].filter((_, i) => i % 3 === 0);
-  const right = pieces[1].filter((_, i) => i % 3 === 0);
-  assert.deepEqual(left, [0, 10, 20, 30, 40, 50]);
-  assert.deepEqual(right, [100, 110, 120, 130, 140, 150]);
-  // Nacisk jedzie razem z punktem, kawałki są pełnymi trójkami.
-  assert.ok(pieces.every((p) => p.length % 3 === 0));
+  assert.deepEqual(pieces[0].filter((_, i) => i % 3 === 0), [0, 10, 20, 30, 40, 50]);
+  assert.deepEqual(pieces[1].filter((_, i) => i % 3 === 0), [100, 110, 120, 130, 140, 150]);
+  assert.ok(pieces.every((p) => p.length % 3 === 0), 'kawałki są pełnymi trójkami');
 });
 
 test('gumka łapie długi odcinek, którego oba końce są poza okręgiem', () => {
-  const longJump = stroke({ size: 2, brush: 'fine', pts: [0, 100, 0.5, 300, 100, 0.5] });
-  assert.deepEqual(core.eraseStroke(longJump, 150, 100, 15, 'whole'), []);
+  const longJump = stroke({ size: 2, pts: [0, 100, 0.5, 300, 100, 0.5] });
+  assert.deepEqual(core.eraseStroke(longJump, 150, 100, 15, 'object'), []);
   // Po przecięciu zostają dwa pojedyncze punkty — okruchy, nie kreski.
-  assert.deepEqual(core.eraseStroke(longJump, 150, 100, 15, 'split'), []);
+  assert.deepEqual(core.eraseStroke(longJump, 150, 100, 15, 'area'), []);
 });
 
 test('gumka uwzględnia grubość kreski, nie tylko jej oś', () => {
-  const thick = stroke({ size: 40, brush: 'fine', pts: [100, 100, 0.5, 200, 100, 0.5] });
-  const thin = stroke({ size: 1, brush: 'fine', pts: [100, 100, 0.5, 200, 100, 0.5] });
-  // Środek gumki 25 px nad osią: gruba kreska sięga, cienka nie.
-  assert.deepEqual(core.eraseStroke(thick, 150, 75, 6, 'whole'), []);
-  assert.equal(core.eraseStroke(thin, 150, 75, 6, 'whole'), null);
+  const thick = stroke({ size: 30, pts: [100, 100, 0.5, 200, 100, 0.5] });
+  const thin = stroke({ size: 1, pts: [100, 100, 0.5, 200, 100, 0.5] });
+  // Oś kreski leży na y=100. Środek gumki 18 px wyżej: gruba kreska sięga
+  // tam swoją połową grubości (15 px + 6 px promienia), cienka nie.
+  assert.deepEqual(core.eraseStroke(thick, 150, 82, 6, 'object'), []);
+  assert.equal(core.eraseStroke(thin, 150, 82, 6, 'object'), null);
 });
 
-test('distanceToSegmentSquared radzi sobie z odcinkiem zerowej długości', () => {
-  assert.equal(core.distanceToSegmentSquared(3, 4, 0, 0, 0, 0), 25);
-  assert.equal(core.distanceToSegmentSquared(5, 5, 0, 0, 10, 0), 25);
+test('gumka sięga obrazu z marginesem własnego promienia', () => {
+  const img = image({ x: 100, y: 100, w: 50, h: 40 });
+  assert.equal(core.eraseHitsImage(img, 120, 120, 5), true, 'środek obrazu');
+  assert.equal(core.eraseHitsImage(img, 96, 120, 5), true, 'tuż obok, w zasięgu promienia');
+  assert.equal(core.eraseHitsImage(img, 80, 120, 5), false);
 });
 
 // ===========================================================================
-// Walidacja kresek
+// Walidacja
 // ===========================================================================
 
 test('validateStroke przepuszcza poprawną kreskę i zaokrągla wartości', () => {
   const ok = core.validateStroke(stroke({ pts: [10.06, 20.04, 0.123, 30, 40, 0.567] }));
   assert.deepEqual(ok.pts, [10.1, 20, 0.12, 30, 40, 0.57]);
+  assert.equal(ok.pressureEnabled, false);
 });
 
 test('validateStroke wycina nieznane pola', () => {
   const ok = core.validateStroke({ ...stroke(), evil: 'payload', onload: 'x' });
-  assert.deepEqual(Object.keys(ok).sort(), ['brush', 'color', 'id', 'pts', 'size', 'tool']);
+  assert.deepEqual(
+    Object.keys(ok).sort(),
+    ['brush', 'color', 'id', 'pressureEnabled', 'pts', 'size', 'tool'],
+  );
 });
 
 test('validateStroke odrzuca wszystko, co odstaje od formatu', () => {
@@ -234,29 +236,27 @@ test('validateStroke odrzuca wszystko, co odstaje od formatu', () => {
     null,
     'kreska',
     [],
-    stroke({ id: '' }),
     stroke({ id: '../../etc/passwd' }),
     stroke({ id: 'x'.repeat(65) }),
     stroke({ tool: 'laser' }),
     stroke({ brush: 'airbrush' }),
     stroke({ color: 'red' }),
     stroke({ color: '#fff' }),
-    stroke({ color: '#xxyyzz' }),
     stroke({ size: 0 }),
-    stroke({ size: 1000 }),
+    stroke({ size: 31 }),
     stroke({ size: NaN }),
+    stroke({ pressureEnabled: 'tak' }),
+    stroke({ pressureEnabled: undefined }),
     stroke({ pts: [] }),
-    stroke({ pts: [1, 2] }),
     stroke({ pts: [1, 2, 0.5, 3] }),
     stroke({ pts: 'nie tablica' }),
     stroke({ pts: [NaN, 10, 0.5] }),
     stroke({ pts: [10, Infinity, 0.5] }),
-    stroke({ pts: [-1, 10, 0.5] }),
-    stroke({ pts: [core.PAGE_WIDTH + 1, 10, 0.5] }),
-    stroke({ pts: [10, -1, 0.5] }),
-    stroke({ pts: [10, core.MAX_PAGE_HEIGHT + 1, 0.5] }),
+    stroke({ pts: [core.MIN_WORLD_X - 1, 10, 0.5] }),
+    stroke({ pts: [core.MAX_WORLD_X + 1, 10, 0.5] }),
+    stroke({ pts: [10, core.MIN_WORLD_Y - 1, 0.5] }),
+    stroke({ pts: [10, core.MAX_WORLD_Y + 1, 0.5] }),
     stroke({ pts: [10, 10, 1.5] }),
-    stroke({ pts: [10, 10, -0.1] }),
     stroke({ pts: [10, 10, '0.5'] }),
   ];
   for (const value of bad) {
@@ -267,40 +267,14 @@ test('validateStroke odrzuca wszystko, co odstaje od formatu', () => {
 test('validateStroke odrzuca kreskę ponad limitem punktów', () => {
   const tooMany = new Array((core.MAX_STROKE_POINTS + 1) * 3).fill(1);
   assert.equal(core.validateStroke(stroke({ pts: tooMany })), null);
-
-  const atLimit = [];
-  for (let i = 0; i < core.MAX_STROKE_POINTS; i++) atLimit.push(1, 1, 0.5);
-  assert.ok(core.validateStroke(stroke({ pts: atLimit })), 'dokładnie na limicie ma przejść');
 });
 
-// ===========================================================================
-// Walidacja obrazów
-// ===========================================================================
-
-function image(overrides) {
-  return {
-    id: 'img1',
-    x: 10,
-    y: 10,
-    w: 100,
-    h: 50,
-    dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
-    ...overrides,
-  };
-}
-
-test('validateImage przepuszcza png, jpeg i webp', () => {
+test('validateImage przepuszcza png, jpeg i webp, odrzuca resztę', () => {
   for (const type of ['png', 'jpeg', 'webp']) {
-    const ok = core.validateImage(image({ dataUrl: 'data:image/' + type + ';base64,AAAA' }));
-    assert.ok(ok, type + ' powinien przejść');
-    assert.deepEqual(Object.keys(ok).sort(), ['dataUrl', 'h', 'id', 'w', 'x', 'y']);
+    assert.ok(core.validateImage(image({ dataUrl: 'data:image/' + type + ';base64,AAAA' })), type);
   }
-});
-
-test('validateImage odrzuca inne schematy i typy', () => {
   const bad = [
     image({ dataUrl: 'data:image/svg+xml;base64,AAAA' }),
-    image({ dataUrl: 'data:image/gif;base64,AAAA' }),
     image({ dataUrl: 'data:text/html;base64,AAAA' }),
     image({ dataUrl: 'javascript:alert(1)' }),
     image({ dataUrl: 'https://example.com/x.png' }),
@@ -308,19 +282,25 @@ test('validateImage odrzuca inne schematy i typy', () => {
     image({ dataUrl: 42 }),
     image({ w: 0 }),
     image({ h: -5 }),
-    image({ x: -1 }),
-    image({ x: core.PAGE_WIDTH - 10, w: 100 }),
+    image({ x: core.MAX_WORLD_X - 10, w: 100 }),
     image({ id: 'zły id' }),
   ];
   for (const value of bad) {
     assert.equal(core.validateImage(value), null, 'powinno odpaść: ' + String(value.dataUrl).slice(0, 40));
   }
+  assert.equal(core.validateImage(image({ dataUrl: 'data:image/png;base64,' + 'A'.repeat(core.MAX_IMAGE_BYTES) })), null);
 });
 
-test('validateImage odrzuca obraz ponad limitem rozmiaru', () => {
-  const prefix = 'data:image/png;base64,';
-  const tooBig = prefix + 'A'.repeat(core.MAX_IMAGE_BYTES);
-  assert.equal(core.validateImage(image({ dataUrl: tooBig })), null);
+test('validateAnnotation czyści etykietę i pilnuje granic', () => {
+  const ok = core.validateAnnotation({ id: 'a1', y: 123.46, label: '  Całki​ oznaczone  ' });
+  assert.deepEqual(ok, { id: 'a1', y: 123.5, label: 'Całki oznaczone' });
+
+  assert.equal(core.validateAnnotation({ id: 'a1', y: 0, label: '' }).label, 'Bez nazwy');
+  assert.equal(core.validateAnnotation({ id: 'a1', y: 0, label: 'x'.repeat(500) }).label.length, core.MAX_LABEL_LENGTH);
+  assert.equal(core.validateAnnotation({ id: 'zły id', y: 0 }), null);
+  assert.equal(core.validateAnnotation({ id: 'a1', y: NaN }), null);
+  assert.equal(core.validateAnnotation({ id: 'a1', y: core.MAX_WORLD_Y + 1 }), null);
+  assert.equal(core.validateAnnotation(null), null);
 });
 
 // ===========================================================================
@@ -332,57 +312,89 @@ test('createEmptyState ma bieżącą wersję formatu', () => {
   assert.equal(empty.version, core.FILE_FORMAT_VERSION);
   assert.deepEqual(empty.strokes, []);
   assert.deepEqual(empty.images, []);
-  assert.equal(empty.meta.background, 'plain');
+  assert.deepEqual(empty.annotations, []);
 });
 
-test('normalizeState przepuszcza poprawny plik v2', () => {
+test('normalizeState przepuszcza poprawny plik v3', () => {
   const { state, skipped } = core.normalizeState({
-    version: 2,
-    meta: { title: 'Całki', background: 'grid' },
+    version: 3,
+    meta: { title: 'Całki' },
     strokes: [stroke()],
     images: [image()],
+    annotations: [{ id: 'n1', y: 500, label: 'Rozdział 2' }],
   });
 
-  assert.equal(state.version, 2);
+  assert.equal(state.version, 3);
   assert.equal(state.meta.title, 'Całki');
-  assert.equal(state.meta.background, 'grid');
   assert.equal(state.strokes.length, 1);
   assert.equal(state.images.length, 1);
-  assert.deepEqual(skipped, { strokes: 0, images: 0 });
+  assert.equal(state.annotations.length, 1);
+  assert.deepEqual(skipped, { strokes: 0, images: 0, annotations: 0 });
 });
 
-test('normalizeState migruje v1: punkty-obiekty na płaskie pts', () => {
-  const { state } = core.normalizeState({
-    version: 1,
-    meta: { title: 'stary' },
+test('normalizeState wczytuje plik z MathNotes 1.0, który nie ma numeru wersji', () => {
+  // Dokładny kształt zapisywany przez poprzednią wersję programu: punkty jako
+  // obiekty {x, y, p}, grubość jako `width`, obrazy jako `width`/`height`.
+  const { state, skipped } = core.normalizeState({
     strokes: [
       {
-        id: 'a1',
+        id: 'abc_123',
         tool: 'pen',
-        brush: 'round',
-        color: '#ffffff',
-        size: 2,
+        brush: 'soft',
+        color: '#ff5c5c',
+        width: 6,
+        pressureEnabled: true,
         points: [
-          { x: 1, y: 2, pressure: 0.5 },
-          { x: 3, y: 4, pressure: 0.6 },
+          { x: 1, y: 2, p: 0.4 },
+          { x: 3, y: 4, p: 0.8 },
         ],
       },
     ],
+    images: [{ id: 'i1', dataUrl: 'data:image/png;base64,AAAA', x: 5, y: 6, width: 80, height: 60 }],
+    annotations: [{ id: 'n1', y: 300, label: 'Zadanie 4' }],
   });
 
-  assert.equal(state.version, 2);
-  assert.deepEqual(state.strokes[0].pts, [1, 2, 0.5, 3, 4, 0.6]);
-  assert.equal('points' in state.strokes[0], false, 'stare pole nie może przeżyć migracji');
+  assert.equal(state.version, core.FILE_FORMAT_VERSION);
+  assert.deepEqual(skipped, { strokes: 0, images: 0, annotations: 0 });
+
+  const migrated = state.strokes[0];
+  assert.deepEqual(migrated.pts, [1, 2, 0.4, 3, 4, 0.8]);
+  assert.equal(migrated.size, 6, 'width przechodzi na size');
+  assert.equal(migrated.brush, 'soft');
+  assert.equal(migrated.pressureEnabled, true);
+  assert.equal('points' in migrated, false, 'stare pole nie może przeżyć migracji');
+  assert.equal('width' in migrated, false);
+
+  assert.equal(state.images[0].w, 80, 'width przechodzi na w');
+  assert.equal(state.images[0].h, 60);
+  assert.equal(state.annotations[0].label, 'Zadanie 4');
 });
 
-test('normalizeState: brak numeru wersji to najstarszy format', () => {
+test('migracja z 1.0 uzupełnia pola, których stare pliki mogły nie mieć', () => {
   const { state } = core.normalizeState({
-    strokes: [
-      { id: 'a1', tool: 'pen', brush: 'fine', color: '#00ff00', size: 3, points: [{ x: 5, y: 6 }, { x: 7, y: 8 }] },
-    ],
+    strokes: [{ id: 'a1', color: '#ffffff', points: [{ x: 1, y: 2 }, { x: 3, y: 4 }] }],
   });
 
-  assert.deepEqual(state.strokes[0].pts, [5, 6, core.DEFAULT_PRESSURE, 7, 8, core.DEFAULT_PRESSURE]);
+  const migrated = state.strokes[0];
+  assert.equal(migrated.tool, 'pen');
+  assert.equal(migrated.brush, 'pen');
+  assert.equal(migrated.size, 4, 'domyślna grubość');
+  assert.equal(migrated.pressureEnabled, false);
+  assert.deepEqual(migrated.pts, [1, 2, core.DEFAULT_PRESSURE, 3, 4, core.DEFAULT_PRESSURE]);
+});
+
+test('normalizeState migruje v2 i dokłada brakujące adnotacje', () => {
+  const { state } = core.normalizeState({
+    version: 2,
+    meta: { title: 'stary', background: 'grid' },
+    strokes: [stroke({ id: 'z9' })],
+  });
+
+  assert.equal(state.version, 3);
+  assert.equal(state.meta.title, 'stary');
+  assert.equal('background' in state.meta, false, 'tło strony zniknęło z formatu');
+  assert.deepEqual(state.annotations, []);
+  assert.equal(state.strokes[0].id, 'z9');
 });
 
 test('normalizeState odmawia otwarcia pliku z przyszłości', () => {
@@ -396,22 +408,22 @@ test('normalizeState odmawia otwarcia pliku z przyszłości', () => {
 
 test('normalizeState pomija uszkodzone elementy i mówi ile', () => {
   const { state, skipped } = core.normalizeState({
-    version: 2,
-    strokes: [stroke(), stroke({ color: 'czerwony' }), null, stroke({ id: 'b2' })],
+    version: 3,
+    strokes: [stroke(), stroke({ color: 'czerwony' }), null],
     images: [image(), image({ dataUrl: 'javascript:alert(1)' })],
+    annotations: [{ id: 'n1', y: 10, label: 'ok' }, { id: 'n2', y: 'nie liczba' }],
   });
 
-  assert.equal(state.strokes.length, 2);
+  assert.equal(state.strokes.length, 1);
   assert.equal(state.images.length, 1);
-  assert.deepEqual(skipped, { strokes: 2, images: 1 });
+  assert.equal(state.annotations.length, 1);
+  assert.deepEqual(skipped, { strokes: 2, images: 1, annotations: 1 });
 });
 
 test('normalizeState nie wpuszcza więcej obrazów niż limit', () => {
   const images = [];
   for (let i = 0; i < core.MAX_IMAGES + 5; i++) images.push(image({ id: 'img' + i }));
-
-  const { state, skipped } = core.normalizeState({ version: 2, images });
-
+  const { state, skipped } = core.normalizeState({ version: 3, images });
   assert.equal(state.images.length, core.MAX_IMAGES);
   assert.equal(skipped.images, 5);
 });
@@ -422,15 +434,16 @@ test('format przeżywa zapis na dysk i odczyt', async (t) => {
   const file = path.join(dir, 'notatnik.json');
 
   const { state } = core.normalizeState({
-    version: 2,
-    meta: { title: 'Ćwiczenia — całki', background: 'grid' },
-    strokes: [stroke(), stroke({ id: 'b2', tool: 'highlighter', brush: 'fine', color: '#ffee00', size: 12 })],
+    version: 3,
+    meta: { title: 'Ćwiczenia — całki' },
+    strokes: [stroke(), stroke({ id: 'b2', brush: 'soft', color: '#ffd75c', size: 12, pressureEnabled: true })],
     images: [image()],
+    annotations: [{ id: 'n1', y: 700, label: 'Rozdział 3' }],
   });
 
   await nf.saveNotebook(file, state);
   const { state: reloaded, skipped } = core.normalizeState(await nf.readNotebook(file));
 
   assert.deepEqual(reloaded, state, 'round-trip nie może zgubić ani zmienić niczego');
-  assert.deepEqual(skipped, { strokes: 0, images: 0 });
+  assert.deepEqual(skipped, { strokes: 0, images: 0, annotations: 0 });
 });

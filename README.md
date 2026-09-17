@@ -24,6 +24,25 @@ npm test
 > nie pobierze swojej binarki. Dopuść je przez `npm approve-scripts` albo uruchom
 > `node node_modules/electron/install.js`.
 
+## Co potrafi
+
+- **Pióro** z dwoma pędzlami: zwykłym i miękkim (poświata, narastanie na starcie
+  kreski). Grubość 1–30 px, pięć kolorów w edytowalnej palecie, opcjonalna
+  zmienna grubość wg nacisku pióra.
+- **Gumka** w dwóch trybach: „Obiekty” kasuje całe kreski i obrazy, „Obszar”
+  wycina fragment i dzieli kreskę na pozostałe kawałki.
+- **Kursor** — zaznaczanie, przesuwanie i skalowanie obrazów za uchwyty narożne,
+  z zachowaniem proporcji. `Delete` usuwa zaznaczony obraz.
+- **Obrazy ze schowka** (`Ctrl/Cmd+V`), zapisywane w ok. 2× rozmiaru
+  wyświetlania, żeby duży zrzut ekranu nie rozdmuchał pliku.
+- **Adnotacje** — poziome linie z etykietą, lista z przeskokiem i usuwaniem,
+  przełącznik widoczności w menu Widok.
+- **Eksport do PDF** ze stronicowaniem A4 (do 300 stron).
+- **Konfigurowalne skróty klawiszowe** z panelem i przywracaniem domyślnych.
+- **Autozapis** co 10 minut do już otwartego pliku oraz dopytanie o zapis przy
+  zamykaniu okna z niezapisanymi zmianami.
+- **Sesja online** do 10 osób, peer-to-peer, bez własnego serwera.
+
 ## Architektura
 
 Bez bundlera i bez transpilacji w runtime — zwykłe pliki `.js` ładowane przez
@@ -32,14 +51,14 @@ Bez bundlera i bez transpilacji w runtime — zwykłe pliki `.js` ładowane prze
 | Plik | Rola |
 | --- | --- |
 | `main.js` | Okno, natywne menu po polsku, blokada nawigacji, handlery IPC, pliki. |
-| `notebook-file.js` | Atomowy zapis: `.tmp` + fsync → kopia do `.bak` → `rename`. |
 | `preload.js` | Jedyny most renderer↔Node (`window.api`, jawnie nazwane metody). |
-| `renderer/core.js` | Logika bez DOM: format pliku, walidacja, geometria, `widthFactor`. Testowana w `test/`. |
+| `notebook-file.js` | Atomowy zapis: `.tmp` + fsync → kopia do `.bak` → `rename`. |
+| `renderer/core.js` | Logika bez DOM: format pliku, walidacja, geometria, szerokość kreski. Testowana w `test/`. |
 | `renderer/doc.js` | Model dokumentu na Yjs, `Y.UndoManager`, jedyne miejsce mutujące Y.Doc. |
 | `renderer/online.js` | Provider y-webrtc, kod zaproszenia, awareness, limity. Bez DOM. |
 | `renderer.js` | Wyłącznie okablowanie DOM/canvas. |
-| `renderer/vendor/collab.bundle.js` | Zvendorowany Yjs + y-webrtc, budowany przez `npm run vendor`. |
-| `index.html` | Nagłówek CSP, ciemna skóra UI. |
+| `renderer/style.css` | Wygląd. |
+| `renderer/vendor/` | Zvendorowane biblioteki, budowane przez `npm run vendor`. |
 
 ### Zależności i `npm run vendor`
 
@@ -50,75 +69,81 @@ ich wprost wpiąć przez `<script>`. Jedyny wyjątek od zasady „bez build step
 npm run vendor
 ```
 
-Skrypt skleja je esbuildem w jeden `renderer/vendor/collab.bundle.js`, który
-eksponuje `window.Collab = { Y, WebrtcProvider, awarenessProtocol }`. Wynik jest
-commitowany do repo, więc aplikacja jest samowystarczalna po spakowaniu.
-Uruchamiaj go **tylko** przy aktualizacji tych bibliotek, nigdy w `npm start`.
-Wersje są przypięte dokładnie (bez `^`) i trzymane w `devDependencies`, bo do
-runtime'u trafia wyłącznie zvendorowany bundle.
+Skrypt robi dwie rzeczy: skleja esbuildem Yjs i y-webrtc w jeden
+`renderer/vendor/collab.bundle.js` wystawiający
+`window.Collab = { Y, WebrtcProvider, awarenessProtocol }`, oraz kopiuje gotowy
+UMD jsPDF do `renderer/vendor/jspdf.umd.min.js`. Oba wyniki są commitowane, więc
+aplikacja jest samowystarczalna po spakowaniu. Uruchamiaj go **tylko** przy
+aktualizacji tych bibliotek, nigdy w `npm start`. Wersje są przypięte dokładnie
+(bez `^`) i trzymane w `devDependencies`, bo do runtime'u trafia wyłącznie
+zvendorowany wynik.
 
-Co wchodzi do bundle'a, decyduje `scripts/collab-entry.js` — reszta bibliotek
-zostaje w środku. `scripts/node-shims.js` dokłada minimalne podpórki pod
-node'owe globale, których szukają zależności y-webrtc (`simple-peer` →
-`readable-stream`, `debug`). Świadomie nie ma tam pełnego polyfilla node'a:
-gdy któraś biblioteka zacznie potrzebować czegoś więcej, lepiej zobaczyć błąd
-builda niż dostać po cichu atrapę zwracającą bzdury.
+Zakres bundle'a decyduje `scripts/collab-entry.js`. `scripts/node-shims.js`
+dokłada minimalne podpórki pod node'owe globale, których szukają zależności
+y-webrtc (`simple-peer` → `readable-stream`, `debug`). Świadomie nie ma tam
+pełnego polyfilla node'a: gdy któraś biblioteka zacznie potrzebować czegoś
+więcej, lepiej zobaczyć błąd builda niż dostać po cichu atrapę zwracającą bzdury.
 
 Sam skrypt pilnuje trzech rzeczy i przerywa build, gdy któraś nie gra:
 
-1. Zainstalowane wersje odpowiadają przypiętym w `package.json` — bundle nie
-   może pochodzić z innych wersji, niż deklaruje repo.
-2. Wynik nie zawiera `eval(` ani `new Function(`. CSP renderera to
+1. Zainstalowane wersje odpowiadają przypiętym w `package.json`.
+2. Wynik nie zawiera `eval(` ani `new Function(` — CSP renderera to
    `script-src 'self'` bez `unsafe-eval`, więc inaczej wywaliłoby się dopiero
-   w runtime, w losowym miejscu sesji online. Ten sam warunek sprawdza test,
-   żeby ręcznie dłubany bundle też nie przeszedł.
+   w runtime. Ten sam warunek sprawdza test, żeby ręcznie dłubany bundle też nie
+   przeszedł.
 3. Wynik faktycznie wystawia `globalThis.Collab`.
 
-Bundle nie jest minifikowany: to commitowany kod obcego pochodzenia, który ma
-dać się przejrzeć i zdiffować przy aktualizacji. Licencje zależności zostają
-na końcu pliku — to ich jedyna kopia w repo.
+Bundle Collab nie jest minifikowany: to commitowany kod obcego pochodzenia,
+który ma dać się przejrzeć i zdiffować przy aktualizacji. jsPDF kopiujemy
+w postaci opublikowanej przez autora.
 
 ## Format pliku
 
-Plik notatnika to tekstowy JSON z polem `version`, nigdy binarny stan Yjs —
-dzięki temu format nie zależy od biblioteki. Zapisywany jest kompaktowo, bez
-wcięć: przy dokumencie z dziesiątkami tysięcy kresek wcięcie na każdą liczbę
-w `pts` potroiłoby rozmiar pliku.
-
-Kształt stanu (`version: 2`):
+Plik notatnika to JSON z polem `version`, **spakowany gzipem**. Nazwa nadal
+kończy się na `.json`, a odczyt jest przezroczysty: nieskompresowane pliki
+ze starszych wersji otwierają się bez żadnej konwersji. Notatnik to w większości
+tablice liczb i base64 obrazów, więc kompresja zbija rozmiar kilkukrotnie.
+Binarnego stanu Yjs nie zapisujemy — format ma być niezależny od biblioteki.
 
 ```jsonc
 {
-  "version": 2,
-  "meta": { "title": "", "background": "plain" },   // plain | grid | lines
+  "version": 3,
+  "meta": { "title": "" },
   "strokes": [{
     "id": "a1",
-    "tool": "pen",        // pen | highlighter
-    "brush": "round",     // round = reaguje na nacisk, fine = stała szerokość
+    "tool": "pen",
+    "brush": "pen",            // pen | soft
     "color": "#ffffff",
-    "size": 2,
-    "pts": [10, 20, 0.5]  // płasko [x, y, nacisk, ...], 0,1 px i 0,01 nacisku
+    "size": 4,                 // 1..30
+    "pressureEnabled": false,
+    "pts": [10, 20, 0.5]       // płasko [x, y, nacisk, ...], 0,1 px i 0,01 nacisku
   }],
-  "images": [{ "id": "i1", "x": 0, "y": 0, "w": 100, "h": 50, "dataUrl": "data:image/png;base64,…" }]
+  "images": [{ "id": "i1", "x": 0, "y": 0, "w": 100, "h": 50, "dataUrl": "data:image/png;base64,…" }],
+  "annotations": [{ "id": "n1", "y": 420, "label": "Rozdział 1" }]
 }
 ```
 
 Migracje trzymane są w `MIGRATIONS` w `core.js` i wykonują się po kolei, więc
-bump wersji to dopisanie jednego kroku. Wersja 1 to kształt sprzed przejścia na
-Yjs: punkty jako obiekty `{x, y, pressure}`. Plik bez pola `version` traktowany
-jest jako v1, plik z wersją nowszą niż `FILE_FORMAT_VERSION` jest odrzucany
-z czytelnym błędem, a nie otwierany z utratą danych.
+bump wersji to dopisanie jednego kroku:
 
-`normalizeState` zwraca `{ state, skipped }`. Elementy, które nie przejdą
-walidacji, są pomijane (fail closed), a nie po cichu naprawiane — `skipped`
-mówi ile, żeby dało się o tym powiedzieć użytkownikowi.
+- **1 → 2**: kształt zapisywany przez MathNotes 1.0. Punkty były obiektami
+  `{x, y, p}`, grubość nazywała się `width`, obrazy miały `width`/`height`,
+  a pliki w ogóle nie miały pola `version`.
+- **2 → 3**: dochodzą adnotacje, znika tło strony z `meta`.
+
+Plik z wersją nowszą niż `FILE_FORMAT_VERSION` jest odrzucany z czytelnym
+błędem, a nie otwierany z utratą danych. `normalizeState` zwraca
+`{ state, skipped }`; elementy, które nie przejdą walidacji, są pomijane
+(fail closed), a `skipped` mówi ile, żeby dało się o tym powiedzieć
+użytkownikowi.
 
 Obok pliku żyją dwie ścieżki pomocnicze:
 
 - `<plik>.tmp` — istnieje tylko w trakcie zapisu; po nieudanym zapisie jest
   sprzątany, więc jego obecność oznacza ubity proces.
-- `<plik>.bak` — dokładnie jedna wersja wstecz, nie historia. Odzyskanie jest
-  ręczne: zmiana nazwy na `.json`.
+- `<plik>.bak` — dokładnie jedna wersja wstecz, nie historia.
+
+Nowe notatniki lądują domyślnie w `Dokumenty/MathNotes`.
 
 ## Dokument i cofanie
 
@@ -127,19 +152,16 @@ Y.Doc; konwersja JSON↔Y.Doc siedzi w `core.js` i dostaje `Y` argumentem, żeby
 core pozostał modułem bez zależności.
 
 ```
-doc.getArray('strokes')  → Y.Map { id, tool, color, size, brush, pts: Y.Array }
-doc.getArray('images')   → Y.Map { id, x, y, w, h, dataUrl }
-doc.getMap('meta')       → { title, background }
+doc.getArray('strokes')      → Y.Map { id, tool, brush, color, size, pressureEnabled, pts: Y.Array }
+doc.getArray('images')       → Y.Map { id, x, y, w, h, dataUrl }
+doc.getArray('annotations')  → Y.Map { id, y, label }
+doc.getMap('meta')           → { title }
 ```
 
 **Cofanie robi `Y.UndoManager`, nie migawki stanu.** `trackedOrigins` to
 wyłącznie lokalny origin instancji, więc undo zdejmuje tylko twoje zmiany —
-migawka cofnęłaby w sesji online także to, co narysował ktoś inny. Przy okazji
-znika problem pamięci przy obrazach. Test `undo cofa TYLKO moje zmiany`
-utrwala to na dwóch połączonych dokumentach.
-
-Granice kroków cofania domykamy jawnie przez `stopCapturing()` przy puszczeniu
-pióra, zamiast polegać na samym `captureTimeout` — dzięki temu jedno
+migawka cofnęłaby w sesji online także to, co narysował ktoś inny. Granice
+kroków domykamy jawnie przez `stopCapturing()` przy puszczeniu pióra, więc jedno
 pociągnięcie to dokładnie jedno undo, także gdy ktoś rysuje bardzo wolno.
 
 Wczytanie pliku leci osobnym originem i czyści historię: otwarcie notatnika nie
@@ -147,27 +169,48 @@ jest zmianą, którą da się cofnąć w pustkę.
 
 ## Rysowanie
 
-Kartka ma stałą szerokość `PAGE_WIDTH` i przewija się tylko w pionie.
-„Rozmiar rzeczywisty” (`Cmd/Ctrl+0`) to szerokość kartki równa szerokości okna —
-przy tym powiększeniu nigdy nie ma przewijania w poziomie. Dopiero po
-powiększeniu ponad ten poziom kartka wystaje poza okno i widok da się przesunąć
-w bok (`Shift`+kółko albo palcem). To przesunięcie widoku po powiększonej
-kartce, a nie druga oś dokumentu — dokument pozostaje kartką, nie tablicą.
+Kartka ma stałą szerokość `PAGE_WIDTH` (900 px) i przewija się w dół bez końca.
+Widok trzyma współrzędne świata lewego górnego rogu plus powiększenie; w poziomie
+jest przycięty do kartki z marginesem `PAGE_PAN_MARGIN`, więc nie da się odpłynąć
+w bok. Powiększenie 5–2000 %, wskaźnik procentów na dole toolbara resetuje je
+kliknięciem.
 
-Gotowe kreski trzymane są w kafelkach po `TILE_HEIGHT` pikseli strony;
+Gotowe kreski trzymane są w kafelkach po `TILE_HEIGHT` pikseli świata;
 przerysowywane są tylko kafle widoczne i zmienione, a kreski odrzucane po
 bboxie. Powyżej `MAX_CACHE_SCALE` kafle są pomijane i kreski lecą wprost na
 ekran: w takim powiększeniu kafel byłby ogromny, a widocznych kresek jest mało.
+Kreska, która właśnie rośnie — moja albo cudza — żyje na wierzchu i trafia do
+kafla dopiero, gdy przestanie się zmieniać.
 
 Wejście:
 
-- Pióro i mysz rysują, palec przewija, odwrócona końcówka rysika działa jak gumka.
+- Pióro i mysz rysują, środkowy przycisk i palec przesuwają widok, odwrócona
+  końcówka rysika działa jak gumka.
 - Punkty zbierane są przez `getCoalescedEvents()`, więc próbki z tabletu nie giną.
 - Piksel na ekranie leci przed synchronizacją: `drawLatestSegment` rysuje od razu
   w `pointermove`, a zapis do Yjs jest zbierany w jedną transakcję na klatkę.
 - Gumka kasuje **wzdłuż przebytej drogi**, nie w punktach próbkowania — przy
   szybkim ruchu przeglądarka scala kilkadziesiąt zdarzeń w jedno i odstęp między
   dwiema pozycjami bywa większy niż średnica gumki.
+
+## Strojenie pióra
+
+Sprzęt nigdy nie odpowiada modelowi: tablety mapują nacisk różnie, a część
+urządzeń nie zgłasza go wcale. Pokrętła są w `core.js`:
+
+| Stała | Znaczenie |
+| --- | --- |
+| `PRESSURE_BASE`, `PRESSURE_RANGE` | Krzywa nacisku: szerokość przy zerowym nacisku i to, ile dokłada pełny. |
+| `DEFAULT_PRESSURE` | Wartość, gdy urządzenie nie zgłasza nacisku (mysz, część tabletów). |
+| `TAPER_RAMP` | Przez ile punktów narasta miękki pędzel na starcie kreski. |
+| `MIN_POINT_SPACING`, `SMOOTHING` | Odrzucanie zbyt gęstych próbek i wygładzanie drgań tabletu. |
+
+`widthAt` zależy **wyłącznie** od danych lokalnych punktu: pędzla, nacisku
+i indeksu liczonego od początku kreski. Nigdy od jej długości ani odległości od
+końca — inaczej `drawLatestSegment` policzyłby inną szerokość niż `drawStroke`
+i linia „skoczyłaby” w momencie puszczenia pióra. Z tego samego powodu
+wygładzanie jest przyczynowe: `smoothPoint` decyduje tylko o nowym punkcie
+i nigdy nie rusza wcześniejszych.
 
 ## Tryb online
 
@@ -181,8 +224,7 @@ sygnalizacyjny. `secret` trafia **wyłącznie** do opcji `password` providera,
 z której y-webrtc wyprowadza przez PBKDF2 klucz AES-GCM i szyfruje nim całą
 sygnalizację — łącznie z SDP i odciskami certyfikatów DTLS. Serwer widzi więc
 losowy `roomId` i szum: nie podsłucha sesji i nie podstawi własnych kluczy.
-Kod nie trafia do pliku notatnika ani do logów; po zakończeniu sesji przestaje
-istnieć.
+Kod nie trafia do pliku notatnika ani do logów.
 
 Uwaga na format: base64url zawiera myślnik, czyli ten sam znak co separator.
 Podział jest jednoznaczny wyłącznie dlatego, że obie połowy mają stałą długość
@@ -198,8 +240,7 @@ Podział jest jednoznaczny wyłącznie dlatego, że obie połowy mają stałą d
 | Rozmiar dokumentu | 200 MB | Po przekroczeniu sesja przerywa się z komunikatem. |
 
 Ustawienia połączenia (adresy sygnalizacji, TURN) żyją w `localStorage` tego
-komputera, nigdy w pliku notatnika — notatnik ma się otwierać u kogoś innego
-bez ciągnięcia za sobą czyichś danych dostępowych.
+komputera, nigdy w pliku notatnika.
 
 Przy dołączaniu domyślnie wybrany jest **nowy notatnik**, żeby nikt przypadkiem
 nie wysłał obcym osobom swoich notatek. „Nowy notatnik” oznacza nowy `Y.Doc`,
@@ -210,55 +251,31 @@ nie da się otworzyć ani założyć innego notatnika — najpierw kończy się 
 **Model zaufania, świadomie:** każdy, kto zna kod, może w sesji rysować
 i kasować wszystko. CRDT gwarantuje, że równoczesne zmiany się nie gubią,
 a `UndoManager` cofa tylko twoje. Na dysk zmiany trafiają wyłącznie przez
-„Zapisz”. Treść od innych osób jest niezaufana: kreski i obrazy przechodzą przez
-walidatory w `core.js`, a nazwy i kolory z awareness przez `validatePeerState`
-i wyłącznie `textContent`.
-
-## Strojenie pióra
-
-Sprzęt nigdy nie odpowiada modelowi: tablety mapują nacisk różnie, a część
-urządzeń nie zgłasza go wcale. Pokrętła są w `core.js`, przy `widthFactor`:
-
-| Stała | Znaczenie |
-| --- | --- |
-| `PRESSURE_GAMMA` | Krzywa nacisku. Wyżej = trzeba mocniej docisnąć, żeby pogrubić. |
-| `MIN_WIDTH_FACTOR` | Dolna granica szerokości — kreska nigdy nie znika. |
-| `DEFAULT_PRESSURE` | Wartość, gdy urządzenie nie zgłasza nacisku (mysz, część tabletów). |
-| `MIN_POINT_DISTANCE` | Próbki bliżej niż to od ostatniego punktu są odrzucane. |
-
-`widthFactor` zależy **wyłącznie** od danych lokalnych punktu: pędzla, narzędzia
-i nacisku. Nigdy od długości kreski ani odległości od jej końca — inaczej
-`drawLatestSegment` policzyłby inną szerokość niż `drawStroke` i linia
-„skoczyłaby” w momencie puszczenia pióra. Z tego samego powodu wygładzanie jest
-przyczynowe: `shouldKeepPoint` decyduje tylko o nowym punkcie i nigdy nie rusza
-wcześniejszych.
+„Zapisz”. Treść od innych osób jest niezaufana: kreski, obrazy i adnotacje
+przechodzą przez walidatory w `core.js`, a nazwy i kolory z awareness przez
+`validatePeerState` i wyłącznie `textContent`.
 
 ## Skróty klawiszowe
 
+Skróty jednoklawiszowe są konfigurowalne (Edycja → Skróty klawiszowe…)
+i zapisywane w `localStorage`. Domyślnie:
+
 | Skrót | Akcja |
 | --- | --- |
-| `Cmd/Ctrl+N` | Nowy notatnik |
-| `Cmd/Ctrl+O` | Otwórz |
-| `Cmd/Ctrl+S` | Zapisz |
-| `Cmd/Ctrl+Shift+S` | Zapisz jako |
-| `Cmd/Ctrl+Shift+I` | Wstaw obraz |
-| `Cmd/Ctrl+Z` | Cofnij (`Y.UndoManager`, nie undo DOM) |
-| `Cmd/Ctrl+Shift+Z` | Ponów |
-| `Cmd/Ctrl+=` / `Cmd/Ctrl+-` / `Cmd/Ctrl+0` | Powiększ / pomniejsz / rozmiar rzeczywisty |
+| `P` / `E` / `V` | Pióro / gumka / kursor |
+| `B` / `L` | Dodaj adnotację / lista adnotacji |
+| `[` / `]` | Mniejsza / większa grubość |
+| `1`–`5` | Kolory z palety |
+| Strzałki | Przesuwanie widoku |
+| `Delete` | Usuń zaznaczony obraz (narzędzie kursora) |
 
-## Stan budowy
+Skróty z modyfikatorem obsługuje natywne menu:
 
-Realizacja idzie etapami z sekcji 8 instrukcji. Po każdym etapie `npm test`.
-
-- [x] 1. Szkielet Electron: okno, `preload.js`, CSP, blokada nawigacji, menu.
-- [x] 2. `notebook-file.js` — atomowy zapis, `.bak`, testy.
-- [x] 3. `core.js` — format v2, migracja z v1, walidatory, geometria, `widthFactor`.
-- [x] 4. `npm run vendor` i bundle Collab.
-- [x] 5. `doc.js` — schemat Yjs, UndoManager, eksport/import JSON.
-- [x] 6. `renderer.js` — pointer events, dwie ścieżki renderowania, kafle, narzędzia, UI,
-      potwierdzenie zamknięcia przy niezapisanych zmianach.
-- [x] 7. `online.js` — kod zaproszenia, provider z `password`, awareness, limity, walidacja.
-- [ ] 8. QA.
-
-Pozycje menu z nieukończonych etapów zgłaszają się w tytule okna jako
-„Jeszcze niedostępne”, zamiast milczeć.
+| Skrót | Akcja |
+| --- | --- |
+| `Cmd/Ctrl+N` / `+O` | Nowy / otwórz |
+| `Cmd/Ctrl+S` / `+Shift+S` | Zapisz / zapisz jako |
+| `Cmd/Ctrl+Z` / `+Shift+Z` | Cofnij / ponów |
+| `Cmd/Ctrl+0` | Resetuj widok |
+| `Cmd/Ctrl+V` | Wklej obraz ze schowka |
+| `Cmd/Ctrl` + kółko | Powiększenie |

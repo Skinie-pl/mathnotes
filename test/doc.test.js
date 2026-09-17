@@ -32,7 +32,15 @@ function makeDoc(options) {
 }
 
 function penStroke(overrides) {
-  return { tool: 'pen', brush: 'round', color: '#ffffff', size: 2, pts: [10, 10, 0.5], ...overrides };
+  return {
+    tool: 'pen',
+    brush: 'pen',
+    color: '#ffffff',
+    size: 4,
+    pressureEnabled: false,
+    pts: [10, 10, 0.5],
+    ...overrides,
+  };
 }
 
 /** Dwukierunkowa synchronizacja jak w sesji online: cudze zmiany mają obcy origin. */
@@ -67,7 +75,10 @@ test('addStroke buduje Y.Map zgodny ze schematem, z pts jako Y.Array', (t) => {
 
   const map = notebook.addStroke(penStroke({ id: 'a1' }));
 
-  assert.deepEqual(Object.keys(map.toJSON()).sort(), ['brush', 'color', 'id', 'pts', 'size', 'tool']);
+  assert.deepEqual(
+    Object.keys(map.toJSON()).sort(),
+    ['brush', 'color', 'id', 'pressureEnabled', 'pts', 'size', 'tool'],
+  );
   assert.equal(map.get('id'), 'a1');
   assert.ok(map.get('pts') instanceof Y.Array, 'pts musi być Y.Array, nie zwykłą tablicą');
   assert.deepEqual(map.get('pts').toArray(), [10, 10, 0.5]);
@@ -144,28 +155,28 @@ test('appendPoints nie przekracza limitu punktów na kreskę', (t) => {
 function horizontalLine(notebook, y) {
   const pts = [];
   for (let x = 0; x <= 150; x += 10) pts.push(x, y, 0.5);
-  return notebook.addStroke(penStroke({ brush: 'fine', pts }));
+  return notebook.addStroke(penStroke({ pts }));
 }
 
-test('eraseAt w trybie "whole" usuwa kreskę z tablicy', (t) => {
+test('eraseAt w trybie "object" usuwa kreskę z tablicy', (t) => {
   const notebook = makeDoc();
   t.after(() => notebook.destroy());
 
   horizontalLine(notebook, 100);
   const untouched = notebook.addStroke(penStroke({ pts: [500, 500, 0.5, 510, 510, 0.5] }));
 
-  assert.equal(notebook.eraseAt(75, 100, 15, 'whole'), 1);
+  assert.equal(notebook.eraseAt(75, 100, 15, 'object'), 1);
   assert.deepEqual(strokeIds(notebook), [untouched.get('id')]);
 });
 
-test('eraseAt w trybie "split" podmienia kreskę na kawałki z nowymi id', (t) => {
+test('eraseAt w trybie "area" podmienia kreskę na kawałki z nowymi id', (t) => {
   const notebook = makeDoc();
   t.after(() => notebook.destroy());
 
   const original = horizontalLine(notebook, 100);
   const originalId = original.get('id');
 
-  assert.equal(notebook.eraseAt(75, 100, 15, 'split'), 1);
+  assert.equal(notebook.eraseAt(75, 100, 15, 'area'), 1);
   assert.equal(notebook.strokes.length, 2);
 
   const ids = strokeIds(notebook);
@@ -173,7 +184,31 @@ test('eraseAt w trybie "split" podmienia kreskę na kawałki z nowymi id', (t) =
   assert.equal(new Set(ids).size, 2);
   // Kawałki dziedziczą wygląd oryginału.
   assert.equal(notebook.strokes.get(0).get('color'), '#ffffff');
-  assert.equal(notebook.strokes.get(0).get('brush'), 'fine');
+  assert.equal(notebook.strokes.get(0).get('brush'), 'pen');
+});
+
+test('kawałki po cięciu gumką zachowują wszystkie pola oryginału', (t) => {
+  // Kawałek, któremu brakuje choćby jednego pola, nie przechodzi walidacji
+  // i znika przy najbliższym renderowaniu albo zapisie — bez żadnego błędu.
+  const notebook = makeDoc();
+  t.after(() => notebook.destroy());
+
+  const pts = [];
+  for (let x = 0; x <= 150; x += 10) pts.push(x, 100, 0.5);
+  notebook.addStroke(penStroke({ brush: 'soft', color: '#ff5c5c', size: 9, pressureEnabled: true, pts }));
+
+  assert.equal(notebook.eraseAt(75, 100, 12, 'area'), 1);
+  assert.equal(notebook.strokes.length, 2);
+
+  const { state, skipped } = notebook.toState();
+  assert.equal(skipped.strokes, 0, 'żaden kawałek nie może odpaść na walidacji');
+  assert.equal(state.strokes.length, 2);
+  for (const piece of state.strokes) {
+    assert.equal(piece.brush, 'soft');
+    assert.equal(piece.color, '#ff5c5c');
+    assert.equal(piece.size, 9);
+    assert.equal(piece.pressureEnabled, true);
+  }
 });
 
 test('eraseAt odsiewa kreski przez shouldConsider, zanim przeczyta ich punkty', (t) => {
@@ -188,7 +223,7 @@ test('eraseAt odsiewa kreski przez shouldConsider, zanim przeczyta ich punkty', 
 
   const asked = [];
   // Obie kreski leżą dokładnie pod gumką, ale sito przepuszcza tylko drugą.
-  const touched = notebook.eraseAt(75, 100, 15, 'whole', (map) => {
+  const touched = notebook.eraseAt(75, 100, 15, 'object', (map) => {
     asked.push(map.get('id'));
     return map === kasowana;
   });
@@ -203,7 +238,7 @@ test('eraseAt nic nie robi, gdy gumka nie dotyka kresek', (t) => {
   t.after(() => notebook.destroy());
 
   horizontalLine(notebook, 100);
-  assert.equal(notebook.eraseAt(900, 900, 15, 'whole'), 0);
+  assert.equal(notebook.eraseAt(900, 900, 15, 'object'), 0);
   assert.equal(notebook.strokes.length, 1);
 });
 
@@ -297,7 +332,7 @@ test('wczytanie pliku nie jest zmianą do cofnięcia', (t) => {
 
   const { state } = core.normalizeState({
     version: 2,
-    strokes: [{ id: 'z9', tool: 'pen', brush: 'round', color: '#00ff00', size: 3, pts: [1, 2, 0.5, 3, 4, 0.5] }],
+    strokes: [{ id: 'z9', tool: 'pen', brush: 'pen', color: '#00ff00', size: 3, pressureEnabled: false, pts: [1, 2, 0.5, 3, 4, 0.5] }],
   });
 
   notebook.loadState(state);
@@ -315,16 +350,14 @@ test('toState i loadState to round-trip', (t) => {
   t.after(() => notebook.destroy());
 
   notebook.setMeta('title', 'Całki');
-  notebook.setMeta('background', 'grid');
   const map = notebook.addStroke(penStroke({ id: 'a1' }));
   notebook.appendPoints(map, [20, 20, 0.6]);
   notebook.addImage({ id: 'img1', x: 10, y: 10, w: 100, h: 50, dataUrl: 'data:image/png;base64,AAAA' });
 
   const { state, skipped } = notebook.toState();
-  assert.deepEqual(skipped, { strokes: 0, images: 0 });
+  assert.deepEqual(skipped, { strokes: 0, images: 0, annotations: 0 });
   assert.equal(state.version, core.FILE_FORMAT_VERSION);
   assert.equal(state.meta.title, 'Całki');
-  assert.equal(state.meta.background, 'grid');
 
   const reloaded = makeDoc();
   t.after(() => reloaded.destroy());
@@ -343,9 +376,10 @@ test('toState pomija kreski, które ktoś wstawił poza API', (t) => {
   const evil = new Y.Map();
   evil.set('id', 'zla');
   evil.set('tool', 'pen');
-  evil.set('brush', 'round');
+  evil.set('brush', 'pen');
   evil.set('color', 'javascript:alert(1)');
-  evil.set('size', 2);
+  evil.set('size', 4);
+  evil.set('pressureEnabled', false);
   evil.set('pts', Y.Array.from([10, 10, 0.5]));
   notebook.doc.transact(() => notebook.strokes.push([evil]), 'remote');
 
@@ -365,7 +399,7 @@ test('loadState podmienia zawartość, a nie dokleja', (t) => {
   notebook.addStroke(penStroke({ id: 'stara' }));
   const { state } = core.normalizeState({
     version: 2,
-    strokes: [{ id: 'nowa', tool: 'pen', brush: 'round', color: '#ffffff', size: 2, pts: [1, 2, 0.5] }],
+    strokes: [{ id: 'nowa', tool: 'pen', brush: 'pen', color: '#ffffff', size: 4, pressureEnabled: false, pts: [1, 2, 0.5] }],
   });
 
   notebook.loadState(state);
@@ -453,11 +487,113 @@ test('observe rozróżnia zmiany własne od cudzych', (t) => {
   assert.equal(seen.length, 2, 'po odsubskrybowaniu nic nie dochodzi');
 });
 
-test('setMeta pilnuje enuma i zgłasza nieznane pole', (t) => {
+test('setMeta czyści wartość i zgłasza nieznane pole', (t) => {
   const notebook = makeDoc();
   t.after(() => notebook.destroy());
 
-  assert.equal(notebook.setMeta('background', 'grid'), 'grid');
-  assert.equal(notebook.setMeta('background', 'hologram'), 'plain', 'spoza enuma wraca wartość domyślna');
+  assert.equal(notebook.setMeta('title', '  Całki  '), 'Całki');
   assert.throws(() => notebook.setMeta('onload', 'x'), TypeError);
+});
+
+// ===========================================================================
+// Obrazy i adnotacje
+// ===========================================================================
+
+function sampleImage(notebook, overrides) {
+  return notebook.addImage({
+    x: 100,
+    y: 100,
+    w: 80,
+    h: 60,
+    dataUrl: 'data:image/png;base64,AAAA',
+    ...overrides,
+  });
+}
+
+test('updateImage przesuwa i skaluje, odrzucając wartości spoza formatu', (t) => {
+  const notebook = makeDoc();
+  t.after(() => notebook.destroy());
+
+  const map = sampleImage(notebook);
+
+  assert.equal(notebook.updateImage(map, { x: 200, y: 300 }), true);
+  assert.deepEqual([map.get('x'), map.get('y'), map.get('w')], [200, 300, 80]);
+
+  assert.equal(notebook.updateImage(map, { w: 160, h: 120 }), true);
+  assert.equal(map.get('w'), 160);
+
+  assert.equal(notebook.updateImage(map, { w: 0 }), false, 'zerowa szerokość odpada');
+  assert.equal(notebook.updateImage(map, { x: NaN }), false);
+  assert.equal(map.get('w'), 160, 'odrzucona zmiana nie rusza obrazu');
+});
+
+test('removeImage i findImage', (t) => {
+  const notebook = makeDoc();
+  t.after(() => notebook.destroy());
+
+  const map = sampleImage(notebook, { id: 'i1' });
+  assert.equal(notebook.findImage('i1'), map);
+  assert.equal(notebook.removeImage(map), true);
+  assert.equal(notebook.images.length, 0);
+  assert.equal(notebook.findImage('i1'), null);
+  assert.equal(notebook.removeImage(map), false, 'drugie usunięcie nie robi nic');
+});
+
+test('gumka w trybie "object" kasuje także obrazy, w "area" nie', (t) => {
+  const notebook = makeDoc();
+  t.after(() => notebook.destroy());
+
+  sampleImage(notebook, { id: 'i1' });
+  assert.equal(notebook.eraseAt(120, 120, 10, 'area'), 0, 'obrazu nie da się przyciąć częściowo');
+  assert.equal(notebook.images.length, 1);
+
+  assert.equal(notebook.eraseAt(120, 120, 10, 'object'), 1);
+  assert.equal(notebook.images.length, 0);
+});
+
+test('adnotacje: dodawanie, usuwanie i lista posortowana po pionie', (t) => {
+  const notebook = makeDoc();
+  t.after(() => notebook.destroy());
+
+  notebook.addAnnotation({ id: 'n2', y: 900, label: 'Rozdział 2' });
+  notebook.addAnnotation({ id: 'n1', y: 100, label: '  Rozdział 1  ' });
+  notebook.addAnnotation({ id: 'n3', y: 500, label: '' });
+
+  assert.deepEqual(notebook.annotationList().map((a) => a.id), ['n1', 'n3', 'n2']);
+  assert.equal(notebook.annotationList()[0].label, 'Rozdział 1');
+  assert.equal(notebook.annotationList()[1].label, 'Bez nazwy', 'pusta etykieta dostaje zastępnik');
+
+  assert.equal(notebook.removeAnnotation('n3'), true);
+  assert.equal(notebook.removeAnnotation('nie-ma'), false);
+  assert.deepEqual(notebook.annotationList().map((a) => a.id), ['n1', 'n2']);
+});
+
+test('addAnnotation rzuca na danych spoza formatu', (t) => {
+  const notebook = makeDoc();
+  t.after(() => notebook.destroy());
+
+  assert.throws(() => notebook.addAnnotation({ y: NaN, label: 'x' }), TypeError);
+  assert.throws(() => notebook.addAnnotation({ y: core.MAX_WORLD_Y + 1, label: 'x' }), TypeError);
+  assert.equal(notebook.annotations.length, 0);
+});
+
+test('clear czyści także adnotacje i da się to cofnąć', (t) => {
+  const notebook = makeDoc();
+  t.after(() => notebook.destroy());
+
+  notebook.addStroke(penStroke());
+  sampleImage(notebook);
+  notebook.addAnnotation({ y: 100, label: 'Rozdział 1' });
+
+  notebook.clear();
+  assert.deepEqual(
+    [notebook.strokes.length, notebook.images.length, notebook.annotations.length],
+    [0, 0, 0],
+  );
+
+  notebook.undo();
+  assert.deepEqual(
+    [notebook.strokes.length, notebook.images.length, notebook.annotations.length],
+    [1, 1, 1],
+  );
 });

@@ -4,32 +4,73 @@ const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain } = require('electr
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
-const { APP_NAME, MENU_ACTIONS, MAX_IMAGE_BYTES } = require('./renderer/core.js');
+const { APP_NAME, MENU_ACTIONS } = require('./renderer/core.js');
 const { saveNotebook, readNotebook } = require('./notebook-file.js');
 
 const isMac = process.platform === 'darwin';
 const INDEX_HTML = path.join(__dirname, 'index.html');
 
-const NOTEBOOK_FILTERS = [{ name: 'Notatnik MathNotes', extensions: ['json'] }];
-const IMAGE_MIME = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-};
+const NOTEBOOK_FILTERS = [{ name: 'Notatki matematyczne', extensions: ['json'] }];
+const MAX_RECENT = 8;
+const MAX_PDF_BYTES = 200 * 1024 * 1024;
 
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
 
 // Ścieżka bieżącego pliku żyje wyłącznie tutaj. Renderer jej nie zna i nie może
 // jej podać — ścieżki biorą się tylko z natywnych dialogów albo z listy
-// ostatnich plików systemu.
+// ostatnich plików, którą też trzyma proces główny.
 let currentPath = null;
 let unsaved = false;
 let forceClose = false;
+let annotationLinesVisible = true;
 // Plik z „Ostatnich” może przyjść, zanim renderer zdąży się zgłosić.
 let pendingOpen = null;
 let rendererReady = false;
+
+// ---------------------------------------------------------------------------
+// Katalog notatek i lista ostatnich plików
+// ---------------------------------------------------------------------------
+
+function notesDir() {
+  return path.join(app.getPath('documents'), APP_NAME);
+}
+
+function recentFilePath() {
+  return path.join(app.getPath('userData'), 'recent-files.json');
+}
+
+async function ensureNotesDir() {
+  await fs.mkdir(notesDir(), { recursive: true }).catch(() => {});
+}
+
+async function loadRecent() {
+  try {
+    const raw = JSON.parse(await fs.readFile(recentFilePath(), 'utf8'));
+    if (!Array.isArray(raw)) return [];
+    const existing = [];
+    for (const item of raw) {
+      if (typeof item !== 'string' || !path.isAbsolute(item)) continue;
+      if (await fs.access(item).then(() => true, () => false)) existing.push(item);
+    }
+    return existing.slice(0, MAX_RECENT);
+  } catch {
+    return [];
+  }
+}
+
+async function rememberPath(filePath) {
+  currentPath = filePath;
+  try {
+    app.addRecentDocument(filePath);
+  } catch {
+    // Nie każda platforma to wspiera.
+  }
+  const list = (await loadRecent()).filter((item) => item !== filePath);
+  list.unshift(filePath);
+  await fs.writeFile(recentFilePath(), JSON.stringify(list.slice(0, MAX_RECENT)), 'utf8').catch(() => {});
+  await buildMenu();
+}
 
 // ---------------------------------------------------------------------------
 // Okno
@@ -37,10 +78,10 @@ let rendererReady = false;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 860,
-    minWidth: 640,
-    minHeight: 480,
+    width: 1440,
+    height: 900,
+    minWidth: 720,
+    minHeight: 520,
     show: false,
     backgroundColor: '#000000',
     title: APP_NAME,
@@ -55,7 +96,10 @@ function createWindow() {
     },
   });
 
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.maximize();
+    mainWindow.show();
+  });
 
   mainWindow.on('close', (event) => {
     if (forceClose || !unsaved) return;
@@ -115,25 +159,41 @@ function isTrustedSender(event) {
 }
 
 function fileLabel(filePath) {
-  return path.basename(filePath, path.extname(filePath));
+  return path.basename(filePath);
 }
 
-function rememberPath(filePath) {
-  currentPath = filePath;
-  app.addRecentDocument(filePath);
+function showError(title, message) {
+  dialog.showMessageBoxSync(mainWindow ?? undefined, {
+    type: 'error',
+    title,
+    message,
+    buttons: ['OK'],
+  });
 }
 
 async function openFromPath(filePath) {
   const raw = await readNotebook(filePath);
-  rememberPath(filePath);
+  await rememberPath(filePath);
   return { name: fileLabel(filePath), raw };
+}
+
+async function pushOpened(filePath) {
+  try {
+    const payload = await openFromPath(filePath);
+    if (rendererReady && mainWindow) mainWindow.webContents.send('notebook:opened', payload);
+    else pendingOpen = payload;
+  } catch (err) {
+    showError('Nie udało się otworzyć', err.message);
+  }
 }
 
 ipcMain.handle('notebook:open', async (event) => {
   if (!isTrustedSender(event)) return { canceled: true };
+  await ensureNotesDir();
 
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
     title: 'Otwórz notatnik',
+    defaultPath: notesDir(),
     properties: ['openFile'],
     filters: NOTEBOOK_FILTERS,
   });
@@ -142,12 +202,7 @@ ipcMain.handle('notebook:open', async (event) => {
   try {
     return await openFromPath(filePaths[0]);
   } catch (err) {
-    dialog.showMessageBoxSync(mainWindow, {
-      type: 'error',
-      title: 'Nie udało się otworzyć',
-      message: err.message,
-      buttons: ['OK'],
-    });
+    showError('Nie udało się otworzyć', err.message);
     return { canceled: true };
   }
 });
@@ -157,12 +212,13 @@ ipcMain.handle('notebook:save', async (event, payload) => {
   if (payload === null || typeof payload !== 'object') return { canceled: true };
   const { state, saveAs } = payload;
   if (state === null || typeof state !== 'object' || Array.isArray(state)) return { canceled: true };
+  await ensureNotesDir();
 
   let target = saveAs === true ? null : currentPath;
   if (!target) {
     const result = await dialog.showSaveDialog(mainWindow, {
-      title: 'Zapisz notatnik',
-      defaultPath: currentPath ?? 'notatnik.json',
+      title: 'Zapisz notatnik jako',
+      defaultPath: currentPath ?? path.join(notesDir(), 'notatnik.json'),
       filters: NOTEBOOK_FILTERS,
     });
     if (result.canceled || !result.filePath) return { canceled: true };
@@ -172,17 +228,29 @@ ipcMain.handle('notebook:save', async (event, payload) => {
   try {
     await saveNotebook(target, state);
   } catch (err) {
-    dialog.showMessageBoxSync(mainWindow, {
-      type: 'error',
-      title: 'Nie udało się zapisać',
-      message: err.message,
-      buttons: ['OK'],
-    });
+    showError('Nie udało się zapisać', err.message);
     return { canceled: true };
   }
 
-  rememberPath(target);
+  await rememberPath(target);
   return { name: fileLabel(target) };
+});
+
+// Cichy zapis w tle: bez dialogu, bez okienek błędu. Gdy notatnik nie ma
+// jeszcze pliku, autozapis po prostu nie ma dokąd pisać.
+ipcMain.handle('notebook:autosave', async (event, payload) => {
+  if (!isTrustedSender(event)) return { ok: false };
+  if (payload === null || typeof payload !== 'object') return { ok: false };
+  const { state } = payload;
+  if (state === null || typeof state !== 'object' || Array.isArray(state)) return { ok: false };
+  if (!currentPath) return { ok: false, reason: 'no-path' };
+
+  try {
+    await saveNotebook(currentPath, state);
+    return { ok: true, name: fileLabel(currentPath) };
+  } catch {
+    return { ok: false };
+  }
 });
 
 ipcMain.handle('notebook:new', (event) => {
@@ -191,27 +259,30 @@ ipcMain.handle('notebook:new', (event) => {
   return true;
 });
 
-ipcMain.handle('image:pick', async (event) => {
+ipcMain.handle('pdf:save', async (event, payload) => {
   if (!isTrustedSender(event)) return { canceled: true };
+  if (payload === null || typeof payload !== 'object') return { canceled: true };
 
-  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
-    title: 'Wstaw obraz',
-    properties: ['openFile'],
-    filters: [{ name: 'Obrazy', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+  const { data, suggestedName } = payload;
+  const bytes = data instanceof Uint8Array ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : null;
+  if (!bytes || bytes.length === 0 || bytes.length > MAX_PDF_BYTES) return { canceled: true };
+
+  await ensureNotesDir();
+  const safeName = typeof suggestedName === 'string' ? path.basename(suggestedName) : 'notatnik.pdf';
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Eksportuj do PDF',
+    defaultPath: path.join(notesDir(), safeName),
+    filters: [{ name: 'PDF', extensions: ['pdf'] }],
   });
-  if (canceled || filePaths.length === 0) return { canceled: true };
+  if (result.canceled || !result.filePath) return { canceled: true };
 
-  const filePath = filePaths[0];
-  const mime = IMAGE_MIME[path.extname(filePath).toLowerCase()];
-  if (!mime) return { canceled: true, reason: 'Nieobsługiwany format obrazu.' };
-
-  const bytes = await fs.readFile(filePath);
-  const dataUrl = 'data:' + mime + ';base64,' + bytes.toString('base64');
-  if (dataUrl.length > MAX_IMAGE_BYTES) {
-    return { canceled: true, reason: 'Obraz jest za duży (limit 5 MB po zakodowaniu).' };
+  try {
+    await fs.writeFile(result.filePath, Buffer.from(bytes));
+  } catch (err) {
+    showError('Nie udało się zapisać PDF-a', err.message);
+    return { canceled: true };
   }
-
-  return { dataUrl };
+  return { name: fileLabel(result.filePath) };
 });
 
 // Kod zaproszenia kopiuje main, bo navigator.clipboard nie działa na file://.
@@ -251,27 +322,15 @@ ipcMain.on('renderer:ready', (event) => {
 
 app.on('open-file', (event, filePath) => {
   event.preventDefault();
-  openFromPath(filePath)
-    .then((payload) => {
-      if (rendererReady && mainWindow) mainWindow.webContents.send('notebook:opened', payload);
-      else pendingOpen = payload;
-    })
-    .catch((err) => {
-      dialog.showMessageBoxSync({
-        type: 'error',
-        title: 'Nie udało się otworzyć',
-        message: err.message,
-        buttons: ['OK'],
-      });
-    });
+  pushOpened(filePath);
 });
 
 // ---------------------------------------------------------------------------
 // Menu (po polsku, natywne — nie custom UI)
 // ---------------------------------------------------------------------------
 
-function send(action) {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('menu', action);
+function send(action, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('menu', action, payload);
 }
 
 // Pozycja menu wskazuje akcję z MENU_ACTIONS. Literówka wysadza start aplikacji,
@@ -283,7 +342,16 @@ function item(label, action, accelerator) {
   return { label, accelerator, click: () => send(action) };
 }
 
-function buildMenu() {
+async function buildMenu() {
+  const recent = await loadRecent();
+  const recentSubmenu = recent.length
+    ? recent.map((filePath) => ({
+        label: path.basename(filePath),
+        // Ścieżka nie przechodzi przez renderer — main czyta plik sam.
+        click: () => pushOpened(filePath),
+      }))
+    : [{ label: '(brak ostatnich plików)', enabled: false }];
+
   const template = [];
 
   if (isMac) {
@@ -308,16 +376,13 @@ function buildMenu() {
     submenu: [
       item('Nowy', 'file:new', 'CmdOrCtrl+N'),
       item('Otwórz…', 'file:open', 'CmdOrCtrl+O'),
-      ...(isMac
-        ? [{ role: 'recentDocuments', label: 'Ostatnie pliki', submenu: [{ role: 'clearRecentDocuments', label: 'Wyczyść listę' }] }]
-        : []),
+      { label: 'Otwórz ostatnie', submenu: recentSubmenu },
       { type: 'separator' },
       item('Zapisz', 'file:save', 'CmdOrCtrl+S'),
       item('Zapisz jako…', 'file:save-as', 'CmdOrCtrl+Shift+S'),
+      item('Eksportuj do PDF…', 'file:export-pdf'),
       { type: 'separator' },
-      item('Wstaw obraz…', 'file:insert-image', 'CmdOrCtrl+Shift+I'),
-      { type: 'separator' },
-      isMac ? { role: 'close', label: 'Zamknij okno' } : { role: 'quit', label: 'Zakończ' },
+      isMac ? { role: 'close', label: 'Zamknij okno' } : { role: 'quit', label: 'Zamknij' },
     ],
   });
 
@@ -329,18 +394,31 @@ function buildMenu() {
       item('Cofnij', 'edit:undo', 'CmdOrCtrl+Z'),
       item('Ponów', 'edit:redo', 'CmdOrCtrl+Shift+Z'),
       { type: 'separator' },
-      item('Wyczyść notatnik', 'edit:clear'),
+      { role: 'cut', label: 'Wytnij' },
+      { role: 'copy', label: 'Kopiuj' },
+      // Wklejenie obrazu ze schowka obsługuje zdarzenie `paste` w rendererze.
+      { role: 'paste', label: 'Wklej' },
+      { role: 'selectAll', label: 'Zaznacz wszystko' },
+      { type: 'separator' },
+      item('Skróty klawiszowe…', 'edit:keymap'),
     ],
   });
 
   template.push({
     label: 'Widok',
     submenu: [
-      item('Powiększ', 'view:zoom-in', 'CmdOrCtrl+Plus'),
-      item('Pomniejsz', 'view:zoom-out', 'CmdOrCtrl+-'),
-      item('Rozmiar rzeczywisty', 'view:zoom-reset', 'CmdOrCtrl+0'),
+      item('Lista adnotacji', 'view:annotation-list'),
+      {
+        label: 'Pokaż linie adnotacji',
+        type: 'checkbox',
+        checked: annotationLinesVisible,
+        click: (menuItem) => {
+          annotationLinesVisible = menuItem.checked;
+          send('view:annotation-lines', menuItem.checked);
+        },
+      },
       { type: 'separator' },
-      item('Tło strony', 'view:background', 'CmdOrCtrl+G'),
+      item('Resetuj widok', 'view:reset', 'CmdOrCtrl+0'),
       { type: 'separator' },
       { role: 'togglefullscreen', label: 'Pełny ekran' },
       { role: 'toggleDevTools', label: 'Narzędzia deweloperskie' },
@@ -350,11 +428,11 @@ function buildMenu() {
   template.push({
     label: 'Online',
     submenu: [
-      item('Rozpocznij sesję online', 'online:start'),
+      item('Rozpocznij sesję online…', 'online:start'),
       item('Dołącz do sesji…', 'online:join'),
       { type: 'separator' },
       item('Kopiuj kod zaproszenia', 'online:copy-invite'),
-      item('Zakończ sesję', 'online:leave'),
+      item('Zakończ sesję online', 'online:leave'),
       { type: 'separator' },
       item('Ustawienia połączenia…', 'online:settings'),
     ],
@@ -373,10 +451,11 @@ function buildMenu() {
 function showAbout() {
   dialog.showMessageBox(mainWindow ?? undefined, {
     type: 'info',
-    title: 'O programie ' + APP_NAME,
-    message: APP_NAME + ' ' + app.getVersion(),
+    title: APP_NAME,
+    message: APP_NAME,
     detail:
-      'Offline notatnik matematyczny na tablet graficzny.\n' +
+      'Notatnik matematyczny na tablet graficzny.\n' +
+      'Wersja ' + app.getVersion() + '\n' +
       'Electron ' + process.versions.electron + ' · Chromium ' + process.versions.chrome,
     buttons: ['OK'],
   });
@@ -386,8 +465,9 @@ function showAbout() {
 // Cykl życia
 // ---------------------------------------------------------------------------
 
-app.whenReady().then(() => {
-  buildMenu();
+app.whenReady().then(async () => {
+  await ensureNotesDir();
+  await buildMenu();
   createWindow();
 
   app.on('activate', () => {

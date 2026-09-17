@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const zlib = require('node:zlib');
 
 const nf = require('../notebook-file.js');
 
@@ -25,10 +26,12 @@ test('zapis tworzy plik z poprawnym JSON-em i nie zostawia .tmp', async (t) => {
   const dir = await tempDir(t);
   const file = path.join(dir, 'notatnik.json');
 
-  const result = await nf.saveNotebook(file, { version: 2, strokes: [] });
+  const result = await nf.saveNotebook(file, { version: 3, strokes: [] });
 
   assert.equal(result.path, file);
-  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 2, strokes: [] });
+  const written = await fs.readFile(file);
+  assert.equal(nf.isGzip(written), true, 'plik jest spakowany gzipem');
+  assert.deepEqual(JSON.parse(zlib.gunzipSync(written).toString('utf8')), { version: 3, strokes: [] });
   assert.equal(await exists(nf.tmpPathFor(file)), false, 'plik .tmp musi zniknąć');
   assert.equal(await exists(nf.backupPathFor(file)), false, 'pierwszy zapis nie ma czego backupować');
 });
@@ -37,21 +40,18 @@ test('kolejny zapis przenosi poprzednią wersję do .bak', async (t) => {
   const dir = await tempDir(t);
   const file = path.join(dir, 'notatnik.json');
 
-  await nf.saveNotebook(file, { version: 2, tag: 'pierwszy' });
-  await nf.saveNotebook(file, { version: 2, tag: 'drugi' });
+  await nf.saveNotebook(file, { version: 3, tag: 'pierwszy' });
+  await nf.saveNotebook(file, { version: 3, tag: 'drugi' });
 
-  assert.deepEqual(await nf.readNotebook(file), { version: 2, tag: 'drugi' });
-  assert.deepEqual(JSON.parse(await fs.readFile(nf.backupPathFor(file), 'utf8')), {
-    version: 2,
-    tag: 'pierwszy',
-  });
+  const readBak = async () =>
+    JSON.parse(zlib.gunzipSync(await fs.readFile(nf.backupPathFor(file))).toString('utf8'));
+
+  assert.deepEqual(await nf.readNotebook(file), { version: 3, tag: 'drugi' });
+  assert.deepEqual(await readBak(), { version: 3, tag: 'pierwszy' });
 
   // .bak trzyma dokładnie jedną wersję wstecz, nie historię.
-  await nf.saveNotebook(file, { version: 2, tag: 'trzeci' });
-  assert.deepEqual(JSON.parse(await fs.readFile(nf.backupPathFor(file), 'utf8')), {
-    version: 2,
-    tag: 'drugi',
-  });
+  await nf.saveNotebook(file, { version: 3, tag: 'trzeci' });
+  assert.deepEqual(await readBak(), { version: 3, tag: 'drugi' });
 });
 
 test('odczyt zwraca to, co zapisano', async (t) => {
@@ -111,6 +111,42 @@ test('odczyt odrzuca uszkodzone i nie-obiektowe pliki', async (t) => {
 
   await assert.rejects(nf.readNotebook(path.join(dir, 'nie-ma.json')), { code: 'READ_FAILED' });
   await assert.rejects(nf.readNotebook(dir), { code: 'READ_FAILED' });
+});
+
+test('odczyt radzi sobie z nieskompresowanym plikiem ze starszej wersji', async (t) => {
+  const dir = await tempDir(t);
+  const legacy = path.join(dir, 'stary.json');
+
+  // MathNotes 1.0 zapisywał czysty tekst. Takie pliki muszą się otwierać
+  // bez żadnej konwersji.
+  await fs.writeFile(legacy, JSON.stringify({ strokes: [], annotations: [] }), 'utf8');
+
+  assert.deepEqual(await nf.readNotebook(legacy), { strokes: [], annotations: [] });
+});
+
+test('zapis realnie zmniejsza plik', async (t) => {
+  const dir = await tempDir(t);
+  const file = path.join(dir, 'duzy.json');
+
+  // Kształt zbliżony do prawdziwego notatnika: dużo powtarzalnych liczb.
+  const pts = [];
+  for (let i = 0; i < 20000; i++) pts.push(i % 900, i % 1200, 0.5);
+  const state = { version: 3, strokes: [{ id: 'a1', pts }] };
+
+  const result = await nf.saveNotebook(file, state);
+
+  assert.ok(result.bytes < result.rawBytes / 2, 'spakowany plik jest co najmniej dwa razy mniejszy');
+  assert.deepEqual(await nf.readNotebook(file), state, 'kompresja niczego nie gubi');
+});
+
+test('odczyt odrzuca bombę zipową zamiast rozpakować ją do pamięci', async (t) => {
+  const dir = await tempDir(t);
+  const bomb = path.join(dir, 'bomba.json');
+
+  // Kilkaset kilobajtów zer rozwija się do rozmiaru grubo ponad limitem.
+  await fs.writeFile(bomb, zlib.gzipSync(Buffer.alloc(nf.MAX_FILE_BYTES + 1)));
+
+  await assert.rejects(nf.readNotebook(bomb), { code: 'TOO_LARGE' });
 });
 
 test('odczyt odrzuca plik ponad limitem rozmiaru', async (t) => {

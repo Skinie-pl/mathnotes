@@ -12,7 +12,13 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const ENTRY = path.join(__dirname, 'collab-entry.js');
 const SHIMS = path.join(__dirname, 'node-shims.js');
-const OUTFILE = path.join(ROOT, 'renderer', 'vendor', 'collab.bundle.js');
+const VENDOR_DIR = path.join(ROOT, 'renderer', 'vendor');
+const OUTFILE = path.join(VENDOR_DIR, 'collab.bundle.js');
+
+// jsPDF publikuje gotowy UMD, więc nie ma czego sklejać — kopiujemy artefakt
+// autora, sprawdzamy pod CSP i commitujemy razem z resztą vendora.
+const JSPDF_SRC = path.join(ROOT, 'node_modules', 'jspdf', 'dist', 'jspdf.umd.min.js');
+const JSPDF_OUT = path.join(VENDOR_DIR, 'jspdf.umd.min.js');
 
 // Electron 44 wozi dużo nowszy Chromium; niższy cel nic nie kosztuje,
 // a chroni przed składnią, której akurat nie obsługuje.
@@ -40,7 +46,7 @@ function checkCsp(code) {
 function pinnedVersions() {
   const pkg = require(path.join(ROOT, 'package.json'));
   const all = { ...pkg.dependencies, ...pkg.devDependencies };
-  return ['yjs', 'y-webrtc', 'y-protocols', 'lib0'].map((name) => {
+  return ['yjs', 'y-webrtc', 'y-protocols', 'lib0', 'jspdf'].map((name) => {
     const installed = require(path.join(ROOT, 'node_modules', name, 'package.json')).version;
     return { name, declared: all[name], installed };
   });
@@ -58,7 +64,7 @@ async function main() {
     }
   }
 
-  fs.mkdirSync(path.dirname(OUTFILE), { recursive: true });
+  fs.mkdirSync(VENDOR_DIR, { recursive: true });
 
   await esbuild.build({
     entryPoints: [ENTRY],
@@ -96,7 +102,21 @@ async function main() {
     throw new Error('Bundle nie wystawia globalThis.Collab — sprawdź scripts/collab-entry.js');
   }
 
+  // --- jsPDF ---------------------------------------------------------------
+
+  const jspdf = fs.readFileSync(JSPDF_SRC, 'utf8');
+  const jspdfProblems = checkCsp(jspdf);
+  if (jspdfProblems.length > 0) {
+    throw new Error('jsPDF łamie CSP renderera:\n  ' + jspdfProblems.join('\n  '));
+  }
+  if (!jspdf.includes('jspdf')) {
+    throw new Error('jsPDF nie wygląda na spodziewany artefakt UMD.');
+  }
+  fs.writeFileSync(JSPDF_OUT, jspdf);
+
   const kb = (Buffer.byteLength(code, 'utf8') / 1024).toFixed(0);
+  const jspdfKb = (Buffer.byteLength(jspdf, 'utf8') / 1024).toFixed(0);
+  console.log('Skopiowano ' + path.relative(ROOT, JSPDF_OUT) + ' (' + jspdfKb + ' kB)');
   console.log('Zbudowano ' + path.relative(ROOT, OUTFILE) + ' (' + kb + ' kB)');
   for (const { name, installed } of versions) console.log('  ' + name + ' ' + installed);
   console.log('Pamiętaj: wynik idzie do repo. Uruchom `npm test`.');

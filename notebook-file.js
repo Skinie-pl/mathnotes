@@ -14,12 +14,28 @@
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const zlib = require('node:zlib');
+const { promisify } = require('node:util');
+
+const gzip = promisify(zlib.gzip);
+const gunzip = promisify(zlib.gunzip);
+
+// Notatnik to w większości tablice liczb i base64 obrazów — jedno i drugie
+// pakuje się kilkukrotnie. Plik nadal nazywa się .json i nadal zawiera
+// wersjonowany JSON, tylko spakowany; starsze, nieskompresowane notatniki
+// czytają się dalej bez żadnej migracji.
+const GZIP_MAGIC = [0x1f, 0x8b];
+
+function isGzip(buffer) {
+  return buffer.length >= 2 && buffer[0] === GZIP_MAGIC[0] && buffer[1] === GZIP_MAGIC[1];
+}
 
 const TMP_SUFFIX = '.tmp';
 const BAK_SUFFIX = '.bak';
 
 // Powyżej tego rozmiaru JSON.parse i tak padłby na limicie długości stringa
-// w V8 — lepszy czytelny błąd niż OOM.
+// w V8 — lepszy czytelny błąd niż OOM. Dotyczy tekstu PO rozpakowaniu, bo to
+// on trafia do pamięci; skompresowany plik bywa wielokrotnie mniejszy.
 const MAX_FILE_BYTES = 256 * 1024 * 1024;
 
 class NotebookFileError extends Error {
@@ -98,11 +114,13 @@ async function saveNotebook(filePath, state) {
   const tmpPath = tmpPathFor(filePath);
   const bakPath = backupPathFor(filePath);
 
+  const payload = await gzip(Buffer.from(json, 'utf8'));
+
   try {
     let handle;
     try {
       handle = await fs.open(tmpPath, 'w');
-      await handle.writeFile(json, 'utf8');
+      await handle.writeFile(payload);
       await handle.sync();
     } finally {
       await handle?.close();
@@ -122,7 +140,7 @@ async function saveNotebook(filePath, state) {
     throw new NotebookFileError('WRITE_FAILED', 'Nie udało się zapisać pliku: ' + filePath, err);
   }
 
-  return { path: filePath, bytes: Buffer.byteLength(json, 'utf8') };
+  return { path: filePath, bytes: payload.length, rawBytes: Buffer.byteLength(json, 'utf8') };
 }
 
 /**
@@ -146,11 +164,27 @@ async function readNotebook(filePath) {
     throw new NotebookFileError('TOO_LARGE', 'Plik jest za duży, żeby go wczytać: ' + filePath);
   }
 
-  let text;
+  let raw;
   try {
-    text = await fs.readFile(filePath, 'utf8');
+    raw = await fs.readFile(filePath);
   } catch (err) {
     throw new NotebookFileError('READ_FAILED', 'Nie udało się odczytać pliku: ' + filePath, err);
+  }
+
+  let text;
+  if (isGzip(raw)) {
+    try {
+      // maxOutputLength chroni przed bombą zipową: mały plik nie może rozwinąć
+      // się do gigabajtów w pamięci procesu głównego.
+      text = (await gunzip(raw, { maxOutputLength: MAX_FILE_BYTES })).toString('utf8');
+    } catch (err) {
+      if (err && err.code === 'ERR_BUFFER_TOO_LARGE') {
+        throw new NotebookFileError('TOO_LARGE', 'Plik po rozpakowaniu jest za duży: ' + filePath);
+      }
+      throw new NotebookFileError('INVALID_JSON', 'Nie udało się rozpakować pliku: ' + filePath, err);
+    }
+  } else {
+    text = raw.toString('utf8');
   }
 
   let value;
@@ -168,6 +202,7 @@ async function readNotebook(filePath) {
 
 module.exports = {
   NotebookFileError,
+  isGzip,
   TMP_SUFFIX,
   BAK_SUFFIX,
   MAX_FILE_BYTES,

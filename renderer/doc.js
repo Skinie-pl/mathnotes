@@ -31,6 +31,7 @@
 
       this.strokes = this.doc.getArray(core.STROKES_KEY);
       this.images = this.doc.getArray(core.IMAGES_KEY);
+      this.annotations = this.doc.getArray(core.ANNOTATIONS_KEY);
       this.meta = this.doc.getMap(core.META_KEY);
 
       // Origin jest per-instancja, żeby dwa dokumenty w jednym procesie
@@ -39,7 +40,7 @@
 
       // Cofanie robi UndoManager, nie migawki stanu: w sesji online migawka
       // cofnęłaby też zmiany innych osób. trackedOrigins = tylko my.
-      this.undoManager = new Y.UndoManager([this.strokes, this.images, this.meta], {
+      this.undoManager = new Y.UndoManager([this.strokes, this.images, this.annotations, this.meta], {
         trackedOrigins: new Set([this.localOrigin]),
         captureTimeout: opts.captureTimeout === undefined ? DEFAULT_CAPTURE_TIMEOUT : opts.captureTimeout,
       });
@@ -66,6 +67,7 @@
         brush: input.brush,
         color: input.color,
         size: input.size,
+        pressureEnabled: input.pressureEnabled,
         pts: input.pts,
       });
       if (!candidate) throw new TypeError('addStroke: kreska nie przechodzi walidacji formatu');
@@ -142,9 +144,20 @@
         if (pieces === null) continue;
         hits.push({ index: i, stroke, pieces });
       }
-      if (hits.length === 0) return 0;
+      // Tryb „obiekty” kasuje także obrazy — obrazu nie da się przyciąć częściowo.
+      const imageHits = [];
+      if (mode !== 'area') {
+        for (let i = 0; i < this.images.length; i++) {
+          const image = core.validateImage(this.images.get(i).toJSON());
+          if (image && core.eraseHitsImage(image, x, y, radius)) imageHits.push(i);
+        }
+      }
+
+      if (hits.length === 0 && imageHits.length === 0) return 0;
 
       this.transact(() => {
+        for (let k = imageHits.length - 1; k >= 0; k--) this.images.delete(imageHits[k], 1);
+
         // Od końca, żeby wcześniejsze indeksy nie rozjechały się po usunięciu.
         for (let k = hits.length - 1; k >= 0; k--) {
           const { index, stroke, pieces } = hits[k];
@@ -157,11 +170,11 @@
             index,
             kept.map((pts) =>
               core.strokeToYMap(this.Y, {
+                // Kawałek dziedziczy WSZYSTKIE pola oryginału poza punktami
+                // i identyfikatorem. Pominięcie choćby jednego sprawia, że
+                // kawałek nie przechodzi walidacji i znika bez śladu.
+                ...stroke,
                 id: core.createId(),
-                tool: stroke.tool,
-                brush: stroke.brush,
-                color: stroke.color,
-                size: stroke.size,
                 pts,
               }),
             ),
@@ -169,7 +182,7 @@
         }
       });
 
-      return hits.length;
+      return hits.length + imageHits.length;
     }
 
     // ------------------------------------------------------------------
@@ -193,6 +206,69 @@
       return map;
     }
 
+    /** Przesunięcie albo przeskalowanie obrazu. Zwraca false przy danych spoza formatu. */
+    updateImage(map, box) {
+      if (!map) return false;
+      const next = core.validateImage({ ...map.toJSON(), ...box });
+      if (!next) return false;
+      this.transact(() => {
+        map.set('x', next.x);
+        map.set('y', next.y);
+        map.set('w', next.w);
+        map.set('h', next.h);
+      });
+      return true;
+    }
+
+    removeImage(map) {
+      const index = this.images.toArray().indexOf(map);
+      if (index < 0) return false;
+      this.transact(() => this.images.delete(index, 1));
+      return true;
+    }
+
+    findImage(id) {
+      for (let i = 0; i < this.images.length; i++) {
+        const map = this.images.get(i);
+        if (map && map.get('id') === id) return map;
+      }
+      return null;
+    }
+
+    addAnnotation(input) {
+      const candidate = core.validateAnnotation({
+        id: typeof input.id === 'string' ? input.id : core.createId(),
+        y: input.y,
+        label: input.label,
+      });
+      if (!candidate) throw new TypeError('addAnnotation: adnotacja nie przechodzi walidacji formatu');
+      if (this.annotations.length >= core.MAX_ANNOTATIONS) return null;
+
+      const map = core.annotationToYMap(this.Y, candidate);
+      this.transact(() => this.annotations.push([map]));
+      return map;
+    }
+
+    removeAnnotation(id) {
+      for (let i = 0; i < this.annotations.length; i++) {
+        if (this.annotations.get(i).get('id') === id) {
+          this.transact(() => this.annotations.delete(i, 1));
+          return true;
+        }
+      }
+      return false;
+    }
+
+    /** Adnotacje posortowane po pionie — tak jak pokazuje je lista. */
+    annotationList() {
+      const out = [];
+      for (const map of this.annotations) {
+        const annotation = core.validateAnnotation(map.toJSON());
+        if (annotation) out.push(annotation);
+      }
+      return out.sort((a, b) => a.y - b.y);
+    }
+
     setMeta(key, value) {
       const next = core.validateMeta({ ...this.meta.toJSON(), [key]: value });
       if (!(key in next)) throw new TypeError('setMeta: nieznane pole meta: ' + key);
@@ -204,6 +280,7 @@
       this.transact(() => {
         this.strokes.delete(0, this.strokes.length);
         this.images.delete(0, this.images.length);
+        this.annotations.delete(0, this.annotations.length);
       });
     }
 
@@ -265,11 +342,13 @@
 
       this.strokes.observeDeep(wrap);
       this.images.observeDeep(wrap);
+      this.annotations.observeDeep(wrap);
       this.meta.observe(metaWrap);
 
       return () => {
         this.strokes.unobserveDeep(wrap);
         this.images.unobserveDeep(wrap);
+        this.annotations.unobserveDeep(wrap);
         this.meta.unobserve(metaWrap);
       };
     }
