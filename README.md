@@ -36,7 +36,7 @@ Bez bundlera i bez transpilacji w runtime — zwykłe pliki `.js` ładowane prze
 | `preload.js` | Jedyny most renderer↔Node (`window.api`, jawnie nazwane metody). |
 | `renderer/core.js` | Logika bez DOM: format pliku, walidacja, geometria, `widthFactor`. Testowana w `test/`. |
 | `renderer/doc.js` | Model dokumentu na Yjs, `Y.UndoManager`, jedyne miejsce mutujące Y.Doc. |
-| `renderer/online.js` | Provider y-webrtc, awareness, obsługa pokoju. |
+| `renderer/online.js` | Provider y-webrtc, kod zaproszenia, awareness, limity. Bez DOM. |
 | `renderer.js` | Wyłącznie okablowanie DOM/canvas. |
 | `renderer/vendor/collab.bundle.js` | Zvendorowany Yjs + y-webrtc, budowany przez `npm run vendor`. |
 | `index.html` | Nagłówek CSP, ciemna skóra UI. |
@@ -169,6 +169,51 @@ Wejście:
   szybkim ruchu przeglądarka scala kilkadziesiąt zdarzeń w jedno i odstęp między
   dwiema pozycjami bywa większy niż średnica gumki.
 
+## Tryb online
+
+Aplikacja nigdy nie otwiera nasłuchującego portu i nie ma backendu. Provider
+powstaje dopiero po świadomym uruchomieniu sesji; wcześniej nie istnieje żadne
+połączenie. Sesja żyje wyłącznie w pamięci uczestników i znika, gdy się kończy.
+
+**Kod zaproszenia** ma postać `mn1-<roomId>-<secret>`; obie połowy to 128 bitów
+z `crypto.getRandomValues`, zapisane w base64url. `roomId` widzi serwer
+sygnalizacyjny. `secret` trafia **wyłącznie** do opcji `password` providera,
+z której y-webrtc wyprowadza przez PBKDF2 klucz AES-GCM i szyfruje nim całą
+sygnalizację — łącznie z SDP i odciskami certyfikatów DTLS. Serwer widzi więc
+losowy `roomId` i szum: nie podsłucha sesji i nie podstawi własnych kluczy.
+Kod nie trafia do pliku notatnika ani do logów; po zakończeniu sesji przestaje
+istnieć.
+
+Uwaga na format: base64url zawiera myślnik, czyli ten sam znak co separator.
+Podział jest jednoznaczny wyłącznie dlatego, że obie połowy mają stałą długość
+22 znaków, a wyrażenie jest zakotwiczone z obu stron. Test to utrwala.
+
+| Parametr | Wartość | Dlaczego |
+| --- | --- | --- |
+| `maxConns` | 9 | Razem z tobą maksymalnie 10 osób. |
+| `filterBcConns` | `true` | Zgodnie z sekcją 6 instrukcji. |
+| `signaling` | `wss://` z ustawień | Tylko wss — po `ws://` metadane szłyby otwartym tekstem. |
+| `iceServers` | STUN + opcjonalny TURN | TURN dla sieci blokujących połączenia bezpośrednie. |
+| Kursory | ~20 Hz | Z domknięciem ostatniej pozycji, żeby cudzy kursor nie zamarzał w locie. |
+| Rozmiar dokumentu | 200 MB | Po przekroczeniu sesja przerywa się z komunikatem. |
+
+Ustawienia połączenia (adresy sygnalizacji, TURN) żyją w `localStorage` tego
+komputera, nigdy w pliku notatnika — notatnik ma się otwierać u kogoś innego
+bez ciągnięcia za sobą czyichś danych dostępowych.
+
+Przy dołączaniu domyślnie wybrany jest **nowy notatnik**, żeby nikt przypadkiem
+nie wysłał obcym osobom swoich notatek. „Nowy notatnik” oznacza nowy `Y.Doc`,
+nie wyczyszczony stary: w CRDT skasowanie treści to operacja, która rozeszłaby
+się po sesji i usunęła notatki pozostałym. Z tego samego powodu w trakcie sesji
+nie da się otworzyć ani założyć innego notatnika — najpierw kończy się sesję.
+
+**Model zaufania, świadomie:** każdy, kto zna kod, może w sesji rysować
+i kasować wszystko. CRDT gwarantuje, że równoczesne zmiany się nie gubią,
+a `UndoManager` cofa tylko twoje. Na dysk zmiany trafiają wyłącznie przez
+„Zapisz”. Treść od innych osób jest niezaufana: kreski i obrazy przechodzą przez
+walidatory w `core.js`, a nazwy i kolory z awareness przez `validatePeerState`
+i wyłącznie `textContent`.
+
 ## Strojenie pióra
 
 Sprzęt nigdy nie odpowiada modelowi: tablety mapują nacisk różnie, a część
@@ -212,7 +257,7 @@ Realizacja idzie etapami z sekcji 8 instrukcji. Po każdym etapie `npm test`.
 - [x] 5. `doc.js` — schemat Yjs, UndoManager, eksport/import JSON.
 - [x] 6. `renderer.js` — pointer events, dwie ścieżki renderowania, kafle, narzędzia, UI,
       potwierdzenie zamknięcia przy niezapisanych zmianach.
-- [ ] 7. `online.js` — kod zaproszenia, provider z `password`, awareness, limity, walidacja.
+- [x] 7. `online.js` — kod zaproszenia, provider z `password`, awareness, limity, walidacja.
 - [ ] 8. QA.
 
 Pozycje menu z nieukończonych etapów zgłaszają się w tytule okna jako

@@ -55,6 +55,11 @@ contextBridge.exposeInMainWorld('api', {
     return ipcRenderer.invoke('image:pick');
   },
 
+  /** Kopiuje krótki tekst (kod zaproszenia) do schowka systemowego. */
+  copyText(text) {
+    ipcRenderer.send('clipboard:write', typeof text === 'string' ? text : '');
+  },
+
   setDirty(dirty) {
     ipcRenderer.send('notebook:dirty', dirty === true);
   },

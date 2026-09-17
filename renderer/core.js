@@ -36,6 +36,8 @@
   const MAX_IMAGES = 1000;
   const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
   const MAX_TITLE_LENGTH = 200;
+  // Sesja online przerywa sie po przekroczeniu tego rozmiaru dokumentu.
+  const MAX_DOC_BYTES = 200 * 1024 * 1024;
 
   const COLOR_RE = /^#[0-9a-f]{6}$/i;
   const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -607,6 +609,7 @@
     MAX_STROKES,
     MAX_IMAGES,
     MAX_IMAGE_BYTES,
+    MAX_DOC_BYTES,
 
     // kalibracja pióra
     PRESSURE_GAMMA,

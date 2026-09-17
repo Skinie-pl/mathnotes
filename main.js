@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, Menu, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
@@ -212,6 +212,14 @@ ipcMain.handle('image:pick', async (event) => {
   }
 
   return { dataUrl };
+});
+
+// Kod zaproszenia kopiuje main, bo navigator.clipboard nie działa na file://.
+// Limit długości, żeby renderer nie mógł tędy wypchnąć dowolnej ilości danych.
+ipcMain.on('clipboard:write', (event, text) => {
+  if (!isTrustedSender(event)) return;
+  if (typeof text !== 'string' || text.length === 0 || text.length > 1000) return;
+  clipboard.writeText(text);
 });
 
 // Stan „są niezapisane zmiany” trzyma renderer; main potrzebuje go tylko po to,

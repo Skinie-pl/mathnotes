@@ -50,7 +50,8 @@
 
   // --- Dokument ------------------------------------------------------------
 
-  const notebook = new NotebookDoc(Y);
+  let notebook = new NotebookDoc(Y);
+  let detachNotebook = null;
   let docName = null;
   let dirty = false;
 
@@ -372,6 +373,8 @@
       ctx.restore();
     }
 
+    renderPeers();
+
     if (activeStroke && core.pointCount(activeStroke) > 0) {
       ctx.save();
       ctx.translate(originX(), -top);
@@ -474,7 +477,7 @@
   let activeStroke = null;
   let drawnUpTo = 0;
 
-  notebook.observe((events, transaction, local) => {
+  function handleDocChange(events, transaction, local) {
     let structural = false;
 
     for (const event of events) {
@@ -509,9 +512,33 @@
     if (local) setDirty(true);
     updateHistoryButtons();
     scheduleRender();
-  });
+  }
 
   const remoteDrawn = new Map(); // Y.Map cudzej kreski -> ile punktów już narysowano
+
+  function resetCaches() {
+    strokeCache.clear();
+    bitmaps.clear();
+    remoteDrawn.clear();
+    invalidateAllTiles();
+    surface.scrollTop = 0;
+    panX = 0;
+  }
+
+  /**
+   * Świeży dokument zamiast czyszczenia istniejącego. W CRDT skasowanie treści
+   * to operacja, która rozeszłaby się po sesji i usunęła notatki pozostałym —
+   * „nowy notatnik” musi być nowym Y.Doc, nie pustym starym.
+   */
+  function replaceNotebook() {
+    if (detachNotebook) detachNotebook();
+    activeStrokeMap = null;
+    activeStroke = null;
+    notebook.destroy();
+    notebook = new NotebookDoc(Y);
+    detachNotebook = notebook.observe(handleDocChange);
+    resetCaches();
+  }
 
   // --- Rysowanie piórem ----------------------------------------------------
 
@@ -720,6 +747,7 @@
 
   canvas.addEventListener('pointermove', (event) => {
     updateEraserCursor(event);
+    if (sessionActive()) session.setCursor(toPageX(event.clientX), toPageY(event.clientY));
 
     if (panPointer && event.pointerId === panPointer.id) {
       surface.scrollTop -= event.clientY - panPointer.y;
@@ -750,7 +778,10 @@
 
   canvas.addEventListener('pointerup', releasePointer);
   canvas.addEventListener('pointercancel', releasePointer);
-  canvas.addEventListener('pointerleave', () => updateEraserCursor(null));
+  canvas.addEventListener('pointerleave', () => {
+    updateEraserCursor(null);
+    if (sessionActive()) session.setCursor(NaN, NaN);
+  });
 
   surface.addEventListener('scroll', scheduleRender, { passive: true });
 
@@ -981,6 +1012,8 @@
   }
 
   function applyOpened(payload) {
+    if (blockedByOnline()) return;
+
     let normalized;
     try {
       normalized = core.normalizeState(payload.raw);
@@ -989,14 +1022,9 @@
       return;
     }
 
+    replaceNotebook();
     notebook.loadState(normalized.state);
     docName = payload.name;
-    strokeCache.clear();
-    bitmaps.clear();
-    remoteDrawn.clear();
-    invalidateAllTiles();
-    surface.scrollTop = 0;
-    panX = 0;
     setDirty(false);
     recomputeContentBottom();
     updateHistoryButtons();
@@ -1007,7 +1035,7 @@
   }
 
   async function doOpen() {
-    if (!confirmDiscard()) return;
+    if (blockedByOnline() || !confirmDiscard()) return;
     const result = await window.api.openNotebook();
     if (result.canceled) return;
     applyOpened(result);
@@ -1019,16 +1047,10 @@
   }
 
   async function doNew() {
-    if (!confirmDiscard()) return;
+    if (blockedByOnline() || !confirmDiscard()) return;
     await window.api.newNotebook();
-    notebook.loadState(core.createEmptyState());
+    replaceNotebook();
     docName = null;
-    strokeCache.clear();
-    bitmaps.clear();
-    remoteDrawn.clear();
-    invalidateAllTiles();
-    surface.scrollTop = 0;
-    panX = 0;
     setDirty(false);
     recomputeContentBottom();
     updateHistoryButtons();
@@ -1073,6 +1095,368 @@
     render();
   }
 
+  // --- Panele modalne ------------------------------------------------------
+
+  const backdrop = document.getElementById('modal-backdrop');
+  const modal = document.getElementById('modal');
+
+  function closeModal() {
+    backdrop.dataset.open = 'false';
+    modal.replaceChildren();
+  }
+
+  // Rośnie przy każdym otwarciu. Akcja może otworzyć kolejny panel (np. „Dołącz”
+  // z panelu sesji) — wtedy nie wolno go zamknąć zaraz po powrocie z akcji.
+  let modalToken = 0;
+
+  /** @param {Array<{label: string, primary?: boolean, run: () => boolean|void}>} actions */
+  function openModal(title, description, body, actions) {
+    modalToken += 1;
+    modal.replaceChildren();
+
+    const heading = document.createElement('h2');
+    heading.textContent = title; // nigdy innerHTML
+    modal.append(heading);
+
+    if (description) {
+      const paragraph = document.createElement('p');
+      paragraph.textContent = description;
+      modal.append(paragraph);
+    }
+    if (body) modal.append(...body);
+
+    const row = document.createElement('div');
+    row.className = 'modal-actions';
+    for (const action of actions) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = action.primary ? 'btn btn-primary' : 'btn';
+      button.textContent = action.label;
+      // Akcja zwracająca false zostawia panel otwarty (np. „Kopiuj”).
+      button.addEventListener('click', () => {
+        const token = modalToken;
+        if (action.run() === false) return;
+        if (modalToken === token) closeModal();
+      });
+      row.append(button);
+    }
+    modal.append(row);
+
+    backdrop.dataset.open = 'true';
+  }
+
+  function showNotice(title, message) {
+    openModal(title, message, null, [{ label: 'OK', primary: true, run: () => {} }]);
+  }
+
+  function field(labelText, element) {
+    const label = document.createElement('label');
+    label.textContent = labelText;
+    return [label, element];
+  }
+
+  function choice(group, value, checked, title, hint) {
+    const wrap = document.createElement('label');
+    wrap.className = 'choice';
+    const input = document.createElement('input');
+    input.type = 'radio';
+    input.name = group;
+    input.value = value;
+    input.checked = checked;
+    const text = document.createElement('div');
+    text.textContent = title;
+    const note = document.createElement('span');
+    note.textContent = hint;
+    text.append(note);
+    wrap.append(input, text);
+    return { node: wrap, input };
+  }
+
+  backdrop.addEventListener('pointerdown', (event) => {
+    if (event.target === backdrop) closeModal();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && backdrop.dataset.open === 'true') closeModal();
+  });
+
+  // --- Sesja online --------------------------------------------------------
+
+  const onlineApi = window.MathNotesOnline;
+  const peersLayer = document.getElementById('peers');
+  const onlineButton = document.getElementById('btn-online');
+  const onlineBadge = document.getElementById('online-badge');
+
+  let onlineSettings = onlineApi.loadSettings();
+  let session = null;
+  let peers = [];
+
+  function sessionActive() {
+    return session !== null && session.active;
+  }
+
+  function blockedByOnline() {
+    if (!sessionActive()) return false;
+    flashTitle('Zakończ sesję online, żeby zmienić notatnik', 3500);
+    return true;
+  }
+
+  function updateOnlineBadge() {
+    const on = sessionActive();
+    onlineButton.setAttribute('aria-pressed', String(on));
+    onlineBadge.dataset.on = String(on);
+    onlineBadge.textContent = on ? String(peers.length + 1) : '';
+    onlineButton.title = on ? 'Sesja online — ' + (peers.length + 1) + ' os.' : 'Sesja online';
+  }
+
+  /** Kursory innych osób. Nazwy trafiają wyłącznie do textContent. */
+  function renderPeers() {
+    peersLayer.replaceChildren();
+    if (!sessionActive()) return;
+
+    const s = scale();
+    const top = scrollTopPx();
+    for (const peer of peers) {
+      if (!peer.cursor) continue;
+      const x = originX() + peer.cursor.x * s;
+      const y = peer.cursor.y * s - top;
+      if (x < -60 || x > viewW + 60 || y < -60 || y > viewH + 60) continue;
+
+      const node = document.createElement('div');
+      node.className = 'peer';
+      node.style.left = Math.round(x) + 'px';
+      node.style.top = Math.round(y) + 'px';
+
+      const dot = document.createElement('span');
+      dot.className = 'peer-dot';
+      dot.style.background = peer.color;
+
+      const label = document.createElement('span');
+      label.className = 'peer-name';
+      label.style.background = peer.color;
+      label.textContent = peer.name;
+
+      node.append(dot, label);
+      peersLayer.append(node);
+    }
+  }
+
+  function startSession(code, options) {
+    if (sessionActive()) {
+      showSessionPanel(session.inviteCode);
+      return;
+    }
+    // „Nowy notatnik” musi być nowym Y.Doc — patrz replaceNotebook.
+    if (options && options.fresh) {
+      replaceNotebook();
+      docName = null;
+      setDirty(false);
+      recomputeContentBottom();
+      updateHistoryButtons();
+      render();
+    }
+
+    session = new onlineApi.OnlineSession(window.Collab, notebook);
+    session.on('peers', (list) => {
+      peers = list;
+      updateOnlineBadge();
+      renderPeers();
+    });
+    session.on('status', ({ connected }) => {
+      flashTitle(connected ? 'Sesja online: połączono' : 'Sesja online: brak połączenia', 2500);
+    });
+    session.on('error', (message) => showNotice('Sesja online', message));
+    session.on('stopped', () => {
+      peers = [];
+      updateOnlineBadge();
+      renderPeers();
+    });
+
+    let created;
+    try {
+      created = session.start({ code: code || undefined, settings: onlineSettings });
+    } catch (err) {
+      session = null;
+      flashTitle(err.message, 4000);
+      return;
+    }
+
+    updateOnlineBadge();
+    showSessionPanel(created);
+  }
+
+  function stopSession() {
+    if (!sessionActive()) {
+      flashTitle('Nie ma aktywnej sesji online');
+      return;
+    }
+    session.stop();
+    session = null;
+    peers = [];
+    updateOnlineBadge();
+    renderPeers();
+    flashTitle('Sesja online zakończona');
+  }
+
+  function copyInvite() {
+    if (!sessionActive()) {
+      flashTitle('Nie ma aktywnej sesji online');
+      return;
+    }
+    window.api.copyText(session.inviteCode);
+    flashTitle('Kod zaproszenia skopiowany');
+  }
+
+  function showSessionPanel(code) {
+    const input = document.createElement('input');
+    input.className = 'code';
+    input.readOnly = true;
+    input.value = code;
+
+    openModal(
+      'Sesja online trwa',
+      'Przekaż ten kod osobom, które mają dołączyć — maksymalnie 10 osób razem z tobą. ' +
+        'Kto zna kod, może w tej sesji rysować i kasować wszystko. Kod nie jest nigdzie zapisywany ' +
+        'i znika razem z sesją.',
+      field('Kod zaproszenia', input),
+      [
+        {
+          label: 'Kopiuj',
+          primary: true,
+          run: () => {
+            window.api.copyText(code);
+            flashTitle('Kod zaproszenia skopiowany');
+            return false;
+          },
+        },
+        { label: 'Zakończ sesję', run: stopSession },
+        { label: 'Zamknij', run: () => {} },
+      ],
+    );
+    input.select();
+  }
+
+  function showJoinPanel() {
+    if (sessionActive()) {
+      showSessionPanel(session.inviteCode);
+      return;
+    }
+
+    const input = document.createElement('input');
+    input.className = 'code';
+    input.placeholder = 'mn1-...-...';
+    input.spellcheck = false;
+
+    // Domyślnie nowy notatnik, żeby nikt przypadkiem nie wysłał cudzym osobom
+    // swoich notatek.
+    const fresh = choice(
+      'join-mode',
+      'fresh',
+      true,
+      'Otwórz sesję jako nowy notatnik',
+      'Twoje obecne notatki zostają na dysku i nie trafiają do nikogo.',
+    );
+    const merge = choice(
+      'join-mode',
+      'merge',
+      false,
+      'Scal bieżący notatnik z sesją',
+      'Wszystko, co masz teraz na kartce, zobaczą pozostali uczestnicy.',
+    );
+
+    openModal(
+      'Dołącz do sesji',
+      null,
+      [...field('Kod zaproszenia', input), ...field('Bieżący notatnik', fresh.node), merge.node],
+      [
+        {
+          label: 'Dołącz',
+          primary: true,
+          run: () => {
+            const code = input.value.trim();
+            if (!onlineApi.parseInviteCode(code)) {
+              flashTitle('Nieprawidłowy kod zaproszenia', 3000);
+              return false;
+            }
+            startSession(code, { fresh: fresh.input.checked });
+          },
+        },
+        { label: 'Anuluj', run: () => {} },
+      ],
+    );
+    input.focus();
+  }
+
+  function showSettingsPanel() {
+    const signaling = document.createElement('textarea');
+    signaling.value = onlineSettings.signaling.join('\n');
+    signaling.spellcheck = false;
+
+    const turnUrl = document.createElement('input');
+    turnUrl.placeholder = 'turns:przyklad.pl:5349';
+    turnUrl.value = onlineSettings.turn ? onlineSettings.turn.urls : '';
+    turnUrl.spellcheck = false;
+
+    const turnUser = document.createElement('input');
+    turnUser.placeholder = 'użytkownik';
+    turnUser.value = onlineSettings.turn ? onlineSettings.turn.username : '';
+
+    const turnPass = document.createElement('input');
+    turnPass.type = 'password';
+    turnPass.placeholder = 'hasło';
+    turnPass.value = onlineSettings.turn ? onlineSettings.turn.credential : '';
+
+    openModal(
+      'Ustawienia połączenia',
+      'Serwer sygnalizacyjny służy tylko do odnalezienia się nawzajem — treść notatnika nigdy przez ' +
+        'niego nie przechodzi. TURN przydaje się w sieciach, które blokują połączenia bezpośrednie. ' +
+        'Te ustawienia zostają na tym komputerze i nie trafiają do pliku notatnika.',
+      [
+        ...field('Serwery sygnalizacyjne (po jednym w linii, tylko wss://)', signaling),
+        ...field('TURN — adres (opcjonalny)', turnUrl),
+        ...field('TURN — użytkownik', turnUser),
+        ...field('TURN — hasło', turnPass),
+      ],
+      [
+        {
+          label: 'Zapisz',
+          primary: true,
+          run: () => {
+            onlineSettings = onlineApi.saveSettings({
+              signaling: signaling.value.split('\n'),
+              turn: { urls: turnUrl.value, username: turnUser.value, credential: turnPass.value },
+            });
+            flashTitle(
+              sessionActive()
+                ? 'Ustawienia zapisane — zadziałają przy następnej sesji'
+                : 'Ustawienia zapisane',
+              3000,
+            );
+          },
+        },
+        { label: 'Anuluj', run: () => {} },
+      ],
+    );
+  }
+
+  onlineButton.addEventListener('click', () => {
+    if (sessionActive()) {
+      showSessionPanel(session.inviteCode);
+      return;
+    }
+    openModal(
+      'Sesja online',
+      'Rysowanie na żywo z innymi, bezpośrednio między komputerami. Nie ma serwera, który ' +
+        'przechowywałby notatnik — sesja znika, gdy się kończy.',
+      null,
+      [
+        { label: 'Rozpocznij sesję', primary: true, run: () => startSession(null, { fresh: false }) },
+        { label: 'Dołącz do sesji', run: showJoinPanel },
+        { label: 'Anuluj', run: () => {} },
+      ],
+    );
+  });
+
   // --- Akcje menu ----------------------------------------------------------
 
   const handlers = {
@@ -1097,6 +1481,14 @@
     'view:zoom-in': () => setZoom(zoom * ZOOM_STEP),
     'view:zoom-out': () => setZoom(zoom / ZOOM_STEP),
     'view:zoom-reset': () => setZoom(1),
+    'online:start': () => {
+      if (sessionActive()) showSessionPanel(session.inviteCode);
+      else startSession(null, { fresh: false });
+    },
+    'online:join': showJoinPanel,
+    'online:copy-invite': copyInvite,
+    'online:leave': stopSession,
+    'online:settings': showSettingsPanel,
     'view:background': () => {
       const order = core.BACKGROUNDS;
       const current = notebook.meta.get('background') || 'plain';
@@ -1124,6 +1516,8 @@
 
   new ResizeObserver(resize).observe(surface);
 
+  detachNotebook = notebook.observe(handleDocChange);
+  updateOnlineBadge();
   selectTool('pen');
   refreshTitle();
   updateHistoryButtons();

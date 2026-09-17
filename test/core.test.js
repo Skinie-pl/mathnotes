@@ -43,6 +43,20 @@ test('MENU_ACTIONS: bez duplikatów, same stringi, zamrożone', () => {
   assert.equal(new Set(actions).size, actions.length, 'duplikat akcji menu');
 });
 
+test('każda akcja menu ma handler w rendererze', () => {
+  // main.js pilnuje, że pozycja menu wskazuje istniejącą akcję. To jest druga
+  // połowa tej samej umowy: że po stronie renderera ktoś ją obsługuje.
+  // Bez tego dodanie akcji dawałoby cichy komunikat „jeszcze niedostępne”.
+  const source = require('node:fs').readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
+  const start = source.indexOf('const handlers = {');
+  const end = source.indexOf('function dispatch');
+  assert.ok(start > 0 && end > start, 'nie znaleziono mapy handlerów w renderer.js');
+
+  const block = source.slice(start, end);
+  const missing = core.MENU_ACTIONS.filter((action) => !block.includes("'" + action + "'"));
+  assert.deepEqual(missing, [], 'akcje menu bez handlera');
+});
+
 // ===========================================================================
 // widthFactor — wspólny dla obu ścieżek renderowania
 // ===========================================================================
