@@ -63,12 +63,59 @@ dzięki temu format nie zależy od biblioteki. Zapisywany jest kompaktowo, bez
 wcięć: przy dokumencie z dziesiątkami tysięcy kresek wcięcie na każdą liczbę
 w `pts` potroiłoby rozmiar pliku.
 
+Kształt stanu (`version: 2`):
+
+```jsonc
+{
+  "version": 2,
+  "meta": { "title": "", "background": "plain" },   // plain | grid | lines
+  "strokes": [{
+    "id": "a1",
+    "tool": "pen",        // pen | highlighter
+    "brush": "round",     // round = reaguje na nacisk, fine = stała szerokość
+    "color": "#ffffff",
+    "size": 2,
+    "pts": [10, 20, 0.5]  // płasko [x, y, nacisk, ...], 0,1 px i 0,01 nacisku
+  }],
+  "images": [{ "id": "i1", "x": 0, "y": 0, "w": 100, "h": 50, "dataUrl": "data:image/png;base64,…" }]
+}
+```
+
+Migracje trzymane są w `MIGRATIONS` w `core.js` i wykonują się po kolei, więc
+bump wersji to dopisanie jednego kroku. Wersja 1 to kształt sprzed przejścia na
+Yjs: punkty jako obiekty `{x, y, pressure}`. Plik bez pola `version` traktowany
+jest jako v1, plik z wersją nowszą niż `FILE_FORMAT_VERSION` jest odrzucany
+z czytelnym błędem, a nie otwierany z utratą danych.
+
+`normalizeState` zwraca `{ state, skipped }`. Elementy, które nie przejdą
+walidacji, są pomijane (fail closed), a nie po cichu naprawiane — `skipped`
+mówi ile, żeby dało się o tym powiedzieć użytkownikowi.
+
 Obok pliku żyją dwie ścieżki pomocnicze:
 
 - `<plik>.tmp` — istnieje tylko w trakcie zapisu; po nieudanym zapisie jest
   sprzątany, więc jego obecność oznacza ubity proces.
 - `<plik>.bak` — dokładnie jedna wersja wstecz, nie historia. Odzyskanie jest
   ręczne: zmiana nazwy na `.json`.
+
+## Strojenie pióra
+
+Sprzęt nigdy nie odpowiada modelowi: tablety mapują nacisk różnie, a część
+urządzeń nie zgłasza go wcale. Pokrętła są w `core.js`, przy `widthFactor`:
+
+| Stała | Znaczenie |
+| --- | --- |
+| `PRESSURE_GAMMA` | Krzywa nacisku. Wyżej = trzeba mocniej docisnąć, żeby pogrubić. |
+| `MIN_WIDTH_FACTOR` | Dolna granica szerokości — kreska nigdy nie znika. |
+| `DEFAULT_PRESSURE` | Wartość, gdy urządzenie nie zgłasza nacisku (mysz, część tabletów). |
+| `MIN_POINT_DISTANCE` | Próbki bliżej niż to od ostatniego punktu są odrzucane. |
+
+`widthFactor` zależy **wyłącznie** od danych lokalnych punktu: pędzla, narzędzia
+i nacisku. Nigdy od długości kreski ani odległości od jej końca — inaczej
+`drawLatestSegment` policzyłby inną szerokość niż `drawStroke` i linia
+„skoczyłaby” w momencie puszczenia pióra. Z tego samego powodu wygładzanie jest
+przyczynowe: `shouldKeepPoint` decyduje tylko o nowym punkcie i nigdy nie rusza
+wcześniejszych.
 
 ## Skróty klawiszowe
 
@@ -89,7 +136,7 @@ Realizacja idzie etapami z sekcji 8 instrukcji. Po każdym etapie `npm test`.
 
 - [x] 1. Szkielet Electron: okno, `preload.js`, CSP, blokada nawigacji, menu.
 - [x] 2. `notebook-file.js` — atomowy zapis, `.bak`, testy.
-- [ ] 3. `core.js` — format v2, migracja z v1, walidatory, geometria, `widthFactor`.
+- [x] 3. `core.js` — format v2, migracja z v1, walidatory, geometria, `widthFactor`.
 - [ ] 4. `npm run vendor` i bundle Collab.
 - [ ] 5. `doc.js` — schemat Yjs, UndoManager, eksport/import JSON.
 - [ ] 6. `renderer.js` — pointer events, dwie ścieżki renderowania, kafle, narzędzia, UI.
