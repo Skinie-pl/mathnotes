@@ -315,17 +315,18 @@ test('createEmptyState ma bieżącą wersję formatu', () => {
   assert.deepEqual(empty.annotations, []);
 });
 
-test('normalizeState przepuszcza poprawny plik v3', () => {
+test('normalizeState przepuszcza poprawny plik w bieżącej wersji', () => {
   const { state, skipped } = core.normalizeState({
-    version: 3,
+    version: core.FILE_FORMAT_VERSION,
     meta: { title: 'Całki' },
     strokes: [stroke()],
     images: [image()],
     annotations: [{ id: 'n1', y: 500, label: 'Rozdział 2' }],
   });
 
-  assert.equal(state.version, 3);
+  assert.equal(state.version, core.FILE_FORMAT_VERSION);
   assert.equal(state.meta.title, 'Całki');
+  assert.deepEqual(state.meta.grid, core.DEFAULT_GRID);
   assert.equal(state.strokes.length, 1);
   assert.equal(state.images.length, 1);
   assert.equal(state.annotations.length, 1);
@@ -383,18 +384,36 @@ test('migracja z 1.0 uzupełnia pola, których stare pliki mogły nie mieć', ()
   assert.deepEqual(migrated.pts, [1, 2, core.DEFAULT_PRESSURE, 3, 4, core.DEFAULT_PRESSURE]);
 });
 
-test('normalizeState migruje v2 i dokłada brakujące adnotacje', () => {
+test('normalizeState migruje v2 przez v3 aż do bieżącej wersji', () => {
   const { state } = core.normalizeState({
     version: 2,
     meta: { title: 'stary', background: 'grid' },
     strokes: [stroke({ id: 'z9' })],
   });
 
-  assert.equal(state.version, 3);
+  assert.equal(state.version, core.FILE_FORMAT_VERSION);
   assert.equal(state.meta.title, 'stary');
-  assert.equal('background' in state.meta, false, 'tło strony zniknęło z formatu');
+  assert.equal('background' in state.meta, false, 'stare tło strony zniknęło z formatu');
+  assert.deepEqual(state.meta.grid, core.DEFAULT_GRID, 'v3 → v4 dokłada ustawienia kratki');
   assert.deepEqual(state.annotations, []);
   assert.equal(state.strokes[0].id, 'z9');
+});
+
+test('ustawienia kratki przechodzą przez walidację i round-trip', () => {
+  const { state } = core.normalizeState({
+    version: core.FILE_FORMAT_VERSION,
+    meta: { title: '', grid: { enabled: true, color: '#5CD6A0', opacity: 0.42 } },
+  });
+  assert.deepEqual(state.meta.grid, { enabled: true, color: '#5CD6A0', opacity: 0.42 });
+
+  // Wartości spoza zakresu dostają bezpieczne zastępniki, nie wywalają pliku.
+  assert.deepEqual(core.validateGrid({ enabled: 'tak', color: 'zielony', opacity: 9 }), {
+    enabled: false,
+    color: core.DEFAULT_GRID.color,
+    opacity: 1,
+  });
+  assert.equal(core.validateGrid({ opacity: 0 }).opacity, 0.02, 'zerowa przezroczystość byłaby niewidoczna');
+  assert.deepEqual(core.validateGrid(null), core.DEFAULT_GRID);
 });
 
 test('normalizeState odmawia otwarcia pliku z przyszłości', () => {
@@ -446,4 +465,81 @@ test('format przeżywa zapis na dysk i odczyt', async (t) => {
 
   assert.deepEqual(reloaded, state, 'round-trip nie może zgubić ani zmienić niczego');
   assert.deepEqual(skipped, { strokes: 0, images: 0, annotations: 0 });
+});
+
+// ===========================================================================
+// Kratka, motyw i przekształcenia zaznaczenia
+// ===========================================================================
+
+test('rozstaw kratki trzyma się czytelnego zakresu na ekranie', () => {
+  // Przy każdym powiększeniu oczko ma sensowny rozmiar w pikselach: nie zlewa
+  // się w szarość i nie rozjeżdża na pół ekranu.
+  for (const scale of [0.1, 0.32, 0.5, 1, 2, 4, 12, 20]) {
+    const { minor, major } = core.gridStep(scale);
+    const onScreen = minor * scale;
+    assert.ok(onScreen >= core.GRID_MIN_SCREEN, 'za gęsto przy skali ' + scale + ': ' + onScreen);
+    assert.ok(onScreen < core.GRID_MIN_SCREEN * core.GRID_DIVISIONS, 'za rzadko przy skali ' + scale);
+    assert.equal(major, minor * core.GRID_DIVISIONS);
+  }
+});
+
+test('przybliżanie wprowadza drobniejsze oczka, oddalanie je zabiera', () => {
+  const daleko = core.gridStep(0.2).minor;
+  const blisko = core.gridStep(5).minor;
+  assert.ok(blisko < daleko, 'po przybliżeniu krok musi zmaleć');
+});
+
+test('tryb biały odwraca skrajne szarości, a kolory zostawia', () => {
+  assert.equal(core.themeInk('#ffffff', 'light'), '#000000');
+  assert.equal(core.themeInk('#eeeeee', 'light'), '#111111');
+  assert.equal(core.themeInk('#ff5c5c', 'light'), '#ff5c5c', 'nasycony kolor czyta się na obu tłach');
+  assert.equal(core.themeInk('#ffffff', 'dark'), '#ffffff', 'w ciemnym motywie nic nie ruszamy');
+});
+
+test('transformStroke przesuwa, skaluje i pilnuje granic grubości', () => {
+  const s = stroke({ size: 4, pts: [100, 100, 0.5, 200, 200, 0.5] });
+
+  const moved = core.transformStroke(s, { ox: 0, oy: 0, k: 1, dx: 10, dy: -20 });
+  assert.deepEqual(moved.pts, [110, 80, 0.5, 210, 180, 0.5]);
+  assert.equal(moved.size, 4, 'samo przesunięcie nie zmienia grubości');
+
+  const scaled = core.transformStroke(s, { ox: 100, oy: 100, k: 2, dx: 0, dy: 0 });
+  assert.deepEqual(scaled.pts, [100, 100, 0.5, 300, 300, 0.5]);
+  assert.equal(scaled.size, 8);
+
+  const huge = core.transformStroke(s, { ox: 0, oy: 0, k: 100, dx: 0, dy: 0 });
+  assert.equal(huge.size, core.MAX_STROKE_SIZE, 'grubość nie ucieka poza format');
+});
+
+test('transformImage skaluje prostokąt względem punktu zaczepienia', () => {
+  const box = core.transformImage({ x: 100, y: 100, w: 40, h: 20 }, { ox: 100, oy: 100, k: 2, dx: 0, dy: 0 });
+  assert.deepEqual(box, { x: 100, y: 100, w: 80, h: 40 });
+});
+
+test('unionBounds i transformBounds', () => {
+  const a = { minX: 0, minY: 0, maxX: 10, maxY: 10 };
+  const b = { minX: 20, minY: -5, maxX: 30, maxY: 5 };
+  assert.deepEqual(core.unionBounds([a, null, b]), { minX: 0, minY: -5, maxX: 30, maxY: 10 });
+  assert.equal(core.unionBounds([]), null);
+
+  const moved = core.transformBounds(a, { ox: 0, oy: 0, k: 2, dx: 5, dy: 0 });
+  assert.deepEqual(moved, { minX: 5, minY: 0, maxX: 25, maxY: 20 });
+});
+
+test('wklejany obraz mieści się w kartce niezależnie od powiększenia', () => {
+  // To był powód, dla którego wklejanie potrafiło nic nie robić: obraz liczony
+  // względem ekranu wychodził przy oddaleniu szerszy niż kartka i odpadał
+  // na walidacji granic.
+  for (const [w, h] of [[2560, 1440], [300, 200], [100, 4000]]) {
+    for (const center of [{ x: 0, y: 0 }, { x: 450, y: 900 }, { x: 5000, y: 5000 }]) {
+      const box = core.fitImageIntoPage(w, h, center.x, center.y, 0.7);
+      const image = core.validateImage({
+        id: 'i1',
+        ...box,
+        dataUrl: 'data:image/png;base64,AAAA',
+      });
+      assert.ok(image, 'obraz ' + w + 'x' + h + ' przy środku ' + JSON.stringify(center) + ' musi przejść walidację');
+      assert.ok(Math.abs(box.w / box.h - w / h) < 0.02, 'proporcje zachowane');
+    }
+  }
 });

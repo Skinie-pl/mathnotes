@@ -10,20 +10,23 @@
 
   const TAU = Math.PI * 2;
   const HOLD_MS = 420;
-  const MIN_SCALE = 0.05;
-  const MAX_SCALE = 20;
-  // Powyżej tej skali cache'u rysujemy kreski wprost zamiast z kafli: przy
-  // powiększeniu widać ich mało, a obraz zostaje ostry zamiast rozciągniętego.
+  // Powiększenie liczymy względem dopasowania kartki do szerokości okna.
+  // 100 % = cała szerokość obszaru rysowania widoczna; bardziej oddalić się
+  // nie da, bo dalej jest już tylko pustka wokół kartki.
+  const MIN_ZOOM = 1;
+  const MAX_ZOOM = 8;
+  // Powyżej tej skali cache'u rysujemy kreski wprost zamiast z kafli.
   const MAX_CACHE_SCALE = 2;
   // Cudza kreska rośnie punkt po punkcie. Póki rośnie, żyje na wierzchu i nie
   // trafia do kafli — inaczej każdy punkt przebudowywałby cały kafel.
   const LIVE_STROKE_QUIET_MS = 400;
   const AUTOSAVE_INTERVAL_MS = 10 * 60 * 1000;
-  const MIN_IMAGE_SIZE = 12;
+  const MIN_SELECTION_SIZE = 8;
   const PDF_MAX_PAGES = 300;
-  const PASTE_STORE_SCALE = 2;
+  const PASTE_PAGE_FRACTION = 0.7;
 
   const DEFAULT_COLORS = ['#ffffff', '#ff5c5c', '#5cb8ff', '#5cff8f', '#ffd75c'];
+  const GRID_PRESETS = ['#4c8dff', '#8a8a93', '#5cd6a0', '#ff8a5c'];
   const PREFS_KEY = 'mathnotes-prefs';
   const KEYMAP_KEY = 'mathnotes-keymap';
 
@@ -51,7 +54,7 @@
     try {
       window.localStorage.setItem(
         PREFS_KEY,
-        JSON.stringify({ brushType, eraseMode, currentColor, currentWidth, pressureSensitive, customColors }),
+        JSON.stringify({ brushType, eraseMode, currentColor, currentWidth, pressureSensitive, customColors, theme }),
       );
     } catch {
       // Brak localStorage nie może wywalić rysowania.
@@ -59,7 +62,6 @@
   }
 
   const prefs = loadPrefs();
-
   const isColor = (value) => typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
 
   let customColors =
@@ -76,8 +78,8 @@
     core.MIN_STROKE_SIZE,
     core.MAX_STROKE_SIZE,
   );
-  // Domyślnie wyłączony, tak jak w poprzedniej wersji programu.
   let pressureSensitive = prefs.pressureSensitive === true;
+  let theme = core.THEMES.includes(prefs.theme) ? prefs.theme : 'dark';
 
   // ==========================================================================
   // Widok
@@ -90,8 +92,20 @@
   let viewH = 0;
   let showAnnotationLines = true;
 
-  // Kartka ma stałą szerokość, więc widok nie wędruje na boki — poza drobnym
-  // luzem, żeby krawędź nie sprawiała wrażenia ściany.
+  /** Skala, przy której szerokość kartki dokładnie wypełnia okno. To jest 100 %. */
+  function fitScale() {
+    return viewW > 0 ? viewW / core.PAGE_WIDTH : 1;
+  }
+
+  function zoomLevel() {
+    return view.scale / fitScale();
+  }
+
+  function clampScale(scale) {
+    const fit = fitScale();
+    return core.clamp(scale, fit * MIN_ZOOM, fit * MAX_ZOOM);
+  }
+
   function clampViewX(x, scale) {
     const viewportWorldWidth = viewW / scale;
     const minX = -core.PAGE_PAN_MARGIN;
@@ -121,6 +135,15 @@
     };
   }
 
+  function visibleBounds() {
+    return {
+      minX: view.x,
+      maxX: view.x + viewW / view.scale,
+      minY: view.y,
+      maxY: view.y + viewH / view.scale,
+    };
+  }
+
   // ==========================================================================
   // Dokument
   // ==========================================================================
@@ -134,10 +157,16 @@
   const bitmaps = new Map(); // id obrazu -> ImageBitmap | null
   const liveStrokes = new Map(); // Y.Map -> { drawn: number, timer: number }
 
+  // Zaznaczenie trzymamy jako zbiory Y.Map, żeby przeżyło zmiany kolejności.
+  const selectedStrokes = new Set();
+  const selectedImages = new Set();
+  let selectionBox = null; // bbox zaznaczenia w świecie
+  let pendingTransform = null; // podgląd przesuwania/skalowania przed zatwierdzeniem
+  let marquee = null; // prostokąt zaznaczania
+
   let activeStrokeMap = null;
   let activeStroke = null;
   let drawnUpTo = 0;
-  let selectedImageId = null;
 
   function entryFor(map) {
     let entry = strokeCache.get(map);
@@ -149,13 +178,17 @@
     return entry;
   }
 
+  function currentGrid() {
+    return core.validateGrid(notebook.meta.get('grid'));
+  }
+
   function resetCaches() {
     strokeCache.clear();
     bitmaps.clear();
     for (const live of liveStrokes.values()) clearTimeout(live.timer);
     liveStrokes.clear();
     tiles.clear();
-    selectedImageId = null;
+    clearSelection();
     activeStrokeMap = null;
     activeStroke = null;
   }
@@ -193,6 +226,12 @@
     for (let i = range.first; i <= range.last; i++) tiles.delete(i);
   }
 
+  // Kreska rosnąca albo zaznaczona żyje na wierzchu: pierwsza zmienia się co
+  // klatkę, druga może być właśnie przesuwana.
+  function drawnOnTop(map) {
+    return liveStrokes.has(map) || selectedStrokes.has(map);
+  }
+
   function buildTile(index) {
     const s = cacheScale();
     const tile = { canvas: document.createElement('canvas') };
@@ -206,9 +245,9 @@
     const top = index * core.TILE_HEIGHT;
     const clip = { minX: -Infinity, maxX: Infinity, minY: top, maxY: top + core.TILE_HEIGHT };
 
-    drawImagesInto(tile.ctx, clip);
+    drawImagesInto(tile.ctx, clip, true);
     for (const map of notebook.strokes) {
-      if (liveStrokes.has(map)) continue; // rosnące kreski żyją na wierzchu
+      if (drawnOnTop(map)) continue;
       const entry = entryFor(map);
       if (!entry || !core.boundsIntersect(entry.bounds, clip)) continue;
       drawStroke(tile.ctx, entry.stroke, s);
@@ -252,12 +291,21 @@
     }
   }
 
-  function drawImagesInto(target, clip) {
-    eachImage((image) => {
+  function drawImage(target, image, transform) {
+    const bitmap = bitmaps.get(image.id);
+    if (!bitmap) {
+      if (!bitmaps.has(image.id)) decodeImage(image);
+      return;
+    }
+    const box = transform ? core.transformImage(image, transform) : image;
+    target.drawImage(bitmap, box.x, box.y, box.w, box.h);
+  }
+
+  function drawImagesInto(target, clip, skipSelected) {
+    eachImage((image, map) => {
+      if (skipSelected && selectedImages.has(map)) return;
       if (!core.boundsIntersect(core.imageBounds(image), clip)) return;
-      const bitmap = bitmaps.get(image.id);
-      if (bitmap) target.drawImage(bitmap, image.x, image.y, image.w, image.h);
-      else if (!bitmaps.has(image.id)) decodeImage(image);
+      drawImage(target, image);
     });
   }
 
@@ -270,21 +318,10 @@
         point.y >= image.y &&
         point.y <= image.y + image.h
       ) {
-        hit = { image, map }; // ostatni wygrywa — obrazy rysowane są po kolei
+        hit = map; // ostatni wygrywa — obrazy rysowane są po kolei
       }
     });
     return hit;
-  }
-
-  function selectedImage() {
-    if (!selectedImageId) return null;
-    const map = notebook.findImage(selectedImageId);
-    if (!map) {
-      selectedImageId = null;
-      return null;
-    }
-    const image = core.validateImage(map.toJSON());
-    return image ? { image, map } : null;
   }
 
   // ==========================================================================
@@ -295,13 +332,14 @@
   // linia nie skacze w momencie puszczenia pióra.
 
   function applyStrokeStyle(target, stroke, scale) {
+    const ink = core.themeInk(stroke.color, theme);
     target.lineCap = 'round';
     target.lineJoin = 'round';
-    target.strokeStyle = stroke.color;
-    target.fillStyle = stroke.color;
+    target.strokeStyle = ink;
+    target.fillStyle = ink;
     if (stroke.brush === 'soft') {
       target.globalAlpha = core.SOFT_ALPHA;
-      target.shadowColor = stroke.color;
+      target.shadowColor = ink;
       // shadowBlur nie podlega transformacji canvasa, więc skalę dokładamy sami —
       // inaczej poświata miałaby inny rozmiar w kaflu niż na ekranie.
       target.shadowBlur = stroke.size * core.SOFT_GLOW * scale;
@@ -396,6 +434,47 @@
   }
 
   // ==========================================================================
+  // Kratka w tle
+  // ==========================================================================
+
+  function drawGrid(target) {
+    const grid = currentGrid();
+    if (!grid.enabled) return;
+
+    const box = visibleBounds();
+    const left = Math.max(box.minX, core.MIN_WORLD_X);
+    const right = Math.min(box.maxX, core.MAX_WORLD_X);
+    if (right <= left) return;
+
+    const { minor, major } = core.gridStep(view.scale);
+
+    target.save();
+    target.lineWidth = 1 / view.scale;
+    target.strokeStyle = grid.color;
+
+    // Najpierw drobne oczka, potem grube linie na wierzchu — nakładając się,
+    // wychodzą wyraźniejsze, dokładnie jak na papierze w kratkę.
+    for (const [step, alpha] of [
+      [minor, grid.opacity * 0.5],
+      [major, grid.opacity],
+    ]) {
+      target.globalAlpha = alpha;
+      target.beginPath();
+      for (let x = Math.ceil(left / step) * step; x <= right; x += step) {
+        target.moveTo(x, box.minY);
+        target.lineTo(x, box.maxY);
+      }
+      for (let y = Math.ceil(box.minY / step) * step; y <= box.maxY; y += step) {
+        target.moveTo(left, y);
+        target.lineTo(right, y);
+      }
+      target.stroke();
+    }
+
+    target.restore();
+  }
+
+  // ==========================================================================
   // Adnotacje i zaznaczenie na canvasie
   // ==========================================================================
 
@@ -424,21 +503,25 @@
     target.restore();
   }
 
-  function handleCorners(image) {
+  function handleCorners(box) {
     return [
-      { id: 'nw', x: image.x, y: image.y },
-      { id: 'ne', x: image.x + image.w, y: image.y },
-      { id: 'sw', x: image.x, y: image.y + image.h },
-      { id: 'se', x: image.x + image.w, y: image.y + image.h },
+      { id: 'nw', x: box.minX, y: box.minY },
+      { id: 'ne', x: box.maxX, y: box.minY },
+      { id: 'sw', x: box.minX, y: box.maxY },
+      { id: 'se', x: box.maxX, y: box.maxY },
     ];
   }
 
+  function oppositeCorner(box, handle) {
+    const opposite = { nw: 'se', ne: 'sw', sw: 'ne', se: 'nw' };
+    return handleCorners(box).find((corner) => corner.id === opposite[handle]);
+  }
+
   function findHandleAt(point) {
-    const selected = selectedImage();
-    if (!selected) return null;
-    const hit = 14 / view.scale;
-    for (const corner of handleCorners(selected.image)) {
-      if (Math.abs(point.x - corner.x) <= hit && Math.abs(point.y - corner.y) <= hit) return corner.id;
+    if (!selectionBox) return null;
+    const reach = 14 / view.scale;
+    for (const corner of handleCorners(selectionBox)) {
+      if (Math.abs(point.x - corner.x) <= reach && Math.abs(point.y - corner.y) <= reach) return corner.id;
     }
     return null;
   }
@@ -447,24 +530,55 @@
     return handle === 'nw' || handle === 'se' ? 'nwse-resize' : 'nesw-resize';
   }
 
-  function drawSelection(target) {
-    if (tool !== 'cursor') return;
-    const selected = selectedImage();
-    if (!selected) return;
-    const { image } = selected;
+  function drawSelectionOverlay(target) {
+    if (!selectionBox) return;
+    const box = pendingTransform ? core.transformBounds(selectionBox, pendingTransform) : selectionBox;
 
     target.save();
     target.strokeStyle = '#3a5cff';
     target.lineWidth = 1.5 / view.scale;
     target.setLineDash([5 / view.scale, 4 / view.scale]);
-    target.strokeRect(image.x, image.y, image.w, image.h);
+    target.strokeRect(box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY);
     target.setLineDash([]);
+
     const size = 9 / view.scale;
     target.fillStyle = '#3a5cff';
-    for (const corner of handleCorners(image)) {
+    for (const corner of handleCorners(box)) {
       target.fillRect(corner.x - size / 2, corner.y - size / 2, size, size);
     }
     target.restore();
+  }
+
+  function drawMarquee(target) {
+    if (!marquee) return;
+    const x = Math.min(marquee.x0, marquee.x1);
+    const y = Math.min(marquee.y0, marquee.y1);
+    const w = Math.abs(marquee.x1 - marquee.x0);
+    const h = Math.abs(marquee.y1 - marquee.y0);
+
+    target.save();
+    target.fillStyle = 'rgba(58, 92, 255, 0.12)';
+    target.strokeStyle = '#3a5cff';
+    target.lineWidth = 1 / view.scale;
+    target.setLineDash([4 / view.scale, 3 / view.scale]);
+    target.fillRect(x, y, w, h);
+    target.strokeRect(x, y, w, h);
+    target.restore();
+  }
+
+  function drawSelectedContent(target) {
+    for (const map of selectedImages) {
+      const image = core.validateImage(map.toJSON());
+      if (image) drawImage(target, image, pendingTransform);
+    }
+    for (const map of selectedStrokes) {
+      const entry = entryFor(map);
+      if (!entry) continue;
+      const stroke = pendingTransform
+        ? { ...entry.stroke, ...core.transformStroke(entry.stroke, pendingTransform) }
+        : entry.stroke;
+      drawStroke(target, stroke, view.scale);
+    }
   }
 
   // ==========================================================================
@@ -493,19 +607,21 @@
     );
   }
 
+  function pageColor() {
+    return theme === 'light' ? '#ffffff' : '#000000';
+  }
+
   function render() {
     if (viewW === 0 || viewH === 0) return;
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = '#000000';
+    ctx.fillStyle = pageColor();
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    const visible = {
-      minX: view.x,
-      maxX: view.x + viewW / view.scale,
-      minY: view.y,
-      maxY: view.y + viewH / view.scale,
-    };
+    worldTransform(ctx);
+    drawGrid(ctx);
+
+    const visible = visibleBounds();
 
     if (usesTiles()) {
       const range = core.tileRange(visible);
@@ -514,12 +630,10 @@
       const s = cacheScale();
       for (let i = range.first; i <= range.last; i++) {
         const tile = tiles.get(i) || buildTile(i);
-        const left = (core.MIN_WORLD_X - view.x) * view.scale * dpr;
-        const top = (i * core.TILE_HEIGHT - view.y) * view.scale * dpr;
         ctx.drawImage(
           tile.canvas,
-          left,
-          top,
+          (core.MIN_WORLD_X - view.x) * view.scale * dpr,
+          (i * core.TILE_HEIGHT - view.y) * view.scale * dpr,
           (tile.canvas.width / s) * view.scale * dpr,
           (tile.canvas.height / s) * view.scale * dpr,
         );
@@ -530,10 +644,9 @@
       // byłby ogromny, a widocznych kresek jest wtedy mało. Gdyby to zaczęło
       // zwalniać, następnym krokiem są kafle także w poziomie.
       tiles.clear();
-      worldTransform(ctx);
-      drawImagesInto(ctx, visible);
+      drawImagesInto(ctx, visible, true);
       for (const map of notebook.strokes) {
-        if (liveStrokes.has(map)) continue;
+        if (drawnOnTop(map)) continue;
         const entry = entryFor(map);
         if (!entry || !core.boundsIntersect(entry.bounds, visible)) continue;
         drawStroke(ctx, entry.stroke, view.scale);
@@ -542,6 +655,7 @@
 
     // Kreski, które właśnie rosną — moja i cudze.
     for (const [map, live] of liveStrokes) {
+      if (selectedStrokes.has(map)) continue;
       const entry = entryFor(map);
       if (!entry) continue;
       drawStroke(ctx, entry.stroke, view.scale);
@@ -552,8 +666,10 @@
       drawnUpTo = core.pointCount(activeStroke);
     }
 
+    drawSelectedContent(ctx);
     if (showAnnotationLines) drawAnnotationLines(ctx, visible.minX, visible.maxX, view.scale);
-    drawSelection(ctx);
+    drawSelectionOverlay(ctx);
+    drawMarquee(ctx);
 
     renderPeers();
   }
@@ -568,67 +684,116 @@
 
   function resizeCanvas() {
     const rect = canvas.getBoundingClientRect();
+    const previousZoom = viewW > 0 ? zoomLevel() : 1;
     dpr = window.devicePixelRatio || 1;
     viewW = Math.max(1, Math.round(rect.width));
     viewH = Math.max(1, Math.round(rect.height));
     canvas.width = Math.max(1, Math.round(viewW * dpr));
     canvas.height = Math.max(1, Math.round(viewH * dpr));
+
+    // Powiększenie jest względem szerokości okna, więc po zmianie rozmiaru
+    // trzymamy ten sam poziom procentowy, a nie tę samą skalę.
+    view.scale = clampScale(fitScale() * previousZoom);
     view.x = clampViewX(view.x, view.scale);
+    view.y = clampViewY(view.y);
     tiles.clear();
+    updateZoomIndicator();
     render();
   }
 
   // ==========================================================================
-  // Reakcja na zmiany dokumentu
+  // Zaznaczenie
   // ==========================================================================
 
-  function markLive(map) {
-    let live = liveStrokes.get(map);
-    if (live) clearTimeout(live.timer);
-    else live = { drawn: 0 };
-    live.timer = setTimeout(() => {
-      liveStrokes.delete(map);
-      const entry = entryFor(map);
-      if (entry) invalidateTiles(entry.bounds);
-      scheduleRender();
-    }, LIVE_STROKE_QUIET_MS);
-    liveStrokes.set(map, live);
-    return live;
+  function clearSelection() {
+    if (selectedStrokes.size === 0 && selectedImages.size === 0 && !selectionBox) return;
+    selectedStrokes.clear();
+    selectedImages.clear();
+    selectionBox = null;
+    pendingTransform = null;
+    tiles.clear();
   }
 
-  function handleDocChange(events, transaction, local) {
-    let structural = false;
-
-    for (const event of events) {
-      const target = event.target;
-      // Dosypanie punktów do kreski: unieważniamy tylko kafle tej kreski.
-      if (target && target.parent && target.parent.get && target.parent.get('pts') === target) {
-        const map = target.parent;
-        strokeCache.delete(map);
-        if (map === activeStrokeMap) continue;
-
-        const live = markLive(map);
-        const entry = entryFor(map);
-        if (entry) {
-          // Cudza kreska rośnie w trakcie — dorysowujemy przyrostowo.
-          if (!local) paintLive(entry.stroke, live.drawn);
-          live.drawn = core.pointCount(entry.stroke);
-        }
-        continue;
-      }
-      structural = true;
-      if (target && target.toJSON) strokeCache.delete(target);
+  function recomputeSelectionBox() {
+    const boxes = [];
+    for (const map of selectedStrokes) {
+      const entry = entryFor(map);
+      if (entry) boxes.push(entry.bounds);
     }
-
-    if (structural) {
-      strokeCache.clear();
-      tiles.clear();
-      renderAnnotationList();
+    for (const map of selectedImages) {
+      const image = core.validateImage(map.toJSON());
+      if (image) boxes.push(core.imageBounds(image));
     }
+    selectionBox = core.unionBounds(boxes);
+    if (!selectionBox) {
+      selectedStrokes.clear();
+      selectedImages.clear();
+    }
+  }
 
-    if (local) setDirty(true);
-    updateHistoryButtons();
-    scheduleRender();
+  function selectInBox(box) {
+    selectedStrokes.clear();
+    selectedImages.clear();
+    for (const map of notebook.strokes) {
+      const entry = entryFor(map);
+      if (entry && core.boundsIntersect(entry.bounds, box)) selectedStrokes.add(map);
+    }
+    eachImage((image, map) => {
+      if (core.boundsIntersect(core.imageBounds(image), box)) selectedImages.add(map);
+    });
+    recomputeSelectionBox();
+    tiles.clear();
+  }
+
+  /** Kreska pod kursorem — ta sama geometria, której używa gumka. */
+  function findStrokeAt(point) {
+    const reach = 8 / view.scale;
+    const around = {
+      minX: point.x - reach,
+      maxX: point.x + reach,
+      minY: point.y - reach,
+      maxY: point.y + reach,
+    };
+    let hit = null;
+    for (const map of notebook.strokes) {
+      const entry = entryFor(map);
+      if (!entry || !core.boundsIntersect(entry.bounds, around)) continue;
+      if (core.eraseStroke(entry.stroke, point.x, point.y, reach, 'object') !== null) hit = map;
+    }
+    return hit;
+  }
+
+  function selectSingle(map, isImage) {
+    selectedStrokes.clear();
+    selectedImages.clear();
+    if (isImage) selectedImages.add(map);
+    else selectedStrokes.add(map);
+    recomputeSelectionBox();
+    tiles.clear();
+  }
+
+  function commitTransform() {
+    if (!pendingTransform) return;
+    const transform = pendingTransform;
+    pendingTransform = null;
+
+    if (notebook.transformSelection(selectedStrokes, selectedImages, transform)) {
+      for (const map of selectedStrokes) strokeCache.delete(map);
+      recomputeSelectionBox();
+      notebook.stopCapturing();
+    } else {
+      flashTitle('MathNotes — nie ma gdzie przesunąć, kartka się kończy', 2500);
+    }
+    tiles.clear();
+    render();
+  }
+
+  function deleteSelection() {
+    if (selectedStrokes.size === 0 && selectedImages.size === 0) return;
+    const removed = notebook.removeMany(selectedStrokes, selectedImages);
+    clearSelection();
+    if (removed > 0) notebook.stopCapturing();
+    render();
   }
 
   // ==========================================================================
@@ -641,6 +806,7 @@
   // pióro z odwróconą końcówką i część tabletów raportują tam co innego.
   let gesture = null;
   let panStart = null;
+  let dragStart = null;
 
   function pressureOf(event) {
     return event.pressure && event.pressure > 0 ? event.pressure : core.DEFAULT_PRESSURE;
@@ -714,7 +880,6 @@
 
     // Wygładzanie przyciąga każdy punkt do poprzedniego, więc ostatnia próbka
     // zawsze trochę zostaje za miejscem, w którym pióro naprawdę się oderwało.
-    // Dokładamy dokładną pozycję puszczenia, bez wygładzania.
     if (event) {
       const point = clampWorld(canvasPoint(event));
       const pts = activeStroke.pts;
@@ -762,8 +927,6 @@
       maxY: point.y + radius,
     };
 
-    // Odsiewamy po bboxach z lokalnego cache'u, żeby doc.js nie musiał czytać
-    // punktów każdej kreski w dokumencie przy każdym kroku gumki.
     const touched = notebook.eraseAt(point.x, point.y, radius, eraseMode, (map) => {
       const entry = entryFor(map);
       return entry !== null && core.boundsIntersect(entry.bounds, reach);
@@ -807,55 +970,6 @@
   }
 
   // ==========================================================================
-  // Narzędzie kursora: przesuwanie i skalowanie obrazów
-  // ==========================================================================
-
-  let dragImage = null;
-  let dragOffset = { x: 0, y: 0 };
-  let resizeState = null;
-
-  function startResize(handle, point) {
-    const selected = selectedImage();
-    if (!selected) return;
-    resizeState = {
-      handle,
-      map: selected.map,
-      startX: point.x,
-      x: selected.image.x,
-      y: selected.image.y,
-      w: selected.image.w,
-      h: selected.image.h,
-    };
-    canvas.style.cursor = cursorForHandle(handle);
-  }
-
-  function applyResize(point) {
-    const s = resizeState;
-    const dx = point.x - s.startX;
-    const aspect = s.w / s.h || 1;
-
-    let width = s.handle === 'se' || s.handle === 'ne' ? s.w + dx : s.w - dx;
-    width = Math.max(MIN_IMAGE_SIZE, width);
-    const height = width / aspect;
-
-    const box = { w: width, h: height, x: s.x, y: s.y };
-    if (s.handle === 'nw' || s.handle === 'sw') box.x = s.x + (s.w - width);
-    if (s.handle === 'nw' || s.handle === 'ne') box.y = s.y + (s.h - height);
-
-    notebook.updateImage(s.map, box);
-  }
-
-  function deleteSelectedImage() {
-    const selected = selectedImage();
-    if (!selected) return;
-    const bounds = core.imageBounds(selected.image);
-    notebook.removeImage(selected.map);
-    selectedImageId = null;
-    invalidateTiles(bounds);
-    render();
-  }
-
-  // ==========================================================================
   // Wejście
   // ==========================================================================
 
@@ -865,6 +979,48 @@
     if (tool === 'pen') return PEN_CURSOR;
     if (tool === 'eraser') return eraserCursorFor(currentWidth);
     return 'default';
+  }
+
+  function insideSelection(point) {
+    if (!selectionBox) return false;
+    return (
+      point.x >= selectionBox.minX &&
+      point.x <= selectionBox.maxX &&
+      point.y >= selectionBox.minY &&
+      point.y <= selectionBox.maxY
+    );
+  }
+
+  function beginCursorGesture(event, point) {
+    const handle = findHandleAt(point);
+    if (handle) {
+      gesture = { id: event.pointerId, kind: 'scale', anchor: oppositeCorner(selectionBox, handle) };
+      dragStart = point;
+      canvas.style.cursor = cursorForHandle(handle);
+      return;
+    }
+    if (insideSelection(point)) {
+      gesture = { id: event.pointerId, kind: 'move' };
+      dragStart = point;
+      canvas.style.cursor = 'grabbing';
+      return;
+    }
+
+    const imageHit = findImageAt(point);
+    const strokeHit = imageHit ? null : findStrokeAt(point);
+    if (imageHit || strokeHit) {
+      selectSingle(imageHit || strokeHit, Boolean(imageHit));
+      gesture = { id: event.pointerId, kind: 'move' };
+      dragStart = point;
+      canvas.style.cursor = 'grabbing';
+      render();
+      return;
+    }
+
+    clearSelection();
+    gesture = { id: event.pointerId, kind: 'marquee' };
+    marquee = { x0: point.x, y0: point.y, x1: point.x, y1: point.y };
+    render();
   }
 
   canvas.addEventListener('pointerdown', (event) => {
@@ -898,26 +1054,7 @@
       beginStroke(event);
       return;
     }
-
-    // Narzędzie kursora.
-    const handle = findHandleAt(point);
-    if (handle) {
-      gesture = { id: event.pointerId, kind: 'resize' };
-      startResize(handle, point);
-      return;
-    }
-    const hit = findImageAt(point);
-    if (hit) {
-      gesture = { id: event.pointerId, kind: 'move' };
-      selectedImageId = hit.image.id;
-      dragImage = hit.map;
-      dragOffset = { x: point.x - hit.image.x, y: point.y - hit.image.y };
-      canvas.style.cursor = 'grabbing';
-      render();
-    } else if (selectedImageId) {
-      selectedImageId = null;
-      render();
-    }
+    beginCursorGesture(event, point);
   });
 
   canvas.addEventListener('pointermove', (event) => {
@@ -927,9 +1064,10 @@
     }
 
     if (!gesture || event.pointerId !== gesture.id) {
-      if (tool === 'cursor' && findHandleAt(clampWorld(canvasPoint(event)))) {
-        canvas.style.cursor = cursorForHandle(findHandleAt(clampWorld(canvasPoint(event))));
-      } else if (canvas.style.cursor !== 'grabbing') {
+      if (tool === 'cursor') {
+        const handle = findHandleAt(clampWorld(canvasPoint(event)));
+        canvas.style.cursor = handle ? cursorForHandle(handle) : 'default';
+      } else {
         canvas.style.cursor = defaultCursor();
       }
       return;
@@ -949,14 +1087,25 @@
       extendStroke(event);
       return;
     }
-    if (gesture.kind === 'resize' && resizeState) {
-      applyResize(clampWorld(canvasPoint(event)));
+
+    const point = clampWorld(canvasPoint(event));
+    if (gesture.kind === 'marquee') {
+      marquee.x1 = point.x;
+      marquee.y1 = point.y;
       scheduleRender();
       return;
     }
-    if (gesture.kind === 'move' && dragImage) {
-      const point = clampWorld(canvasPoint(event));
-      notebook.updateImage(dragImage, { x: point.x - dragOffset.x, y: point.y - dragOffset.y });
+    if (gesture.kind === 'move') {
+      pendingTransform = { ox: 0, oy: 0, k: 1, dx: point.x - dragStart.x, dy: point.y - dragStart.y };
+      scheduleRender();
+      return;
+    }
+    if (gesture.kind === 'scale') {
+      const anchor = gesture.anchor;
+      const from = Math.hypot(dragStart.x - anchor.x, dragStart.y - anchor.y);
+      const to = Math.hypot(point.x - anchor.x, point.y - anchor.y);
+      const k = from > 0 ? core.clamp(to / from, 0.05, 20) : 1;
+      pendingTransform = { ox: anchor.x, oy: anchor.y, k, dx: 0, dy: 0 };
       scheduleRender();
     }
   });
@@ -966,16 +1115,35 @@
     const kind = gesture.kind;
     gesture = null;
     panStart = null;
+    dragStart = null;
     lastErasePoint = null;
-    dragImage = null;
-    resizeState = null;
     canvas.style.cursor = defaultCursor();
 
-    if (kind === 'draw') endStroke(event);
-    else if (kind === 'erase' || kind === 'move' || kind === 'resize') {
+    if (kind === 'draw') {
+      endStroke(event);
+      return;
+    }
+    if (kind === 'erase') {
       notebook.stopCapturing();
       render();
+      return;
     }
+    if (kind === 'marquee') {
+      const box = {
+        minX: Math.min(marquee.x0, marquee.x1),
+        maxX: Math.max(marquee.x0, marquee.x1),
+        minY: Math.min(marquee.y0, marquee.y1),
+        maxY: Math.max(marquee.y0, marquee.y1),
+      };
+      marquee = null;
+      // Samo kliknięcie w pustkę nie jest zaznaczaniem obszaru.
+      const wide = (box.maxX - box.minX) * view.scale > MIN_SELECTION_SIZE;
+      const tall = (box.maxY - box.minY) * view.scale > MIN_SELECTION_SIZE;
+      if (wide || tall) selectInBox(box);
+      render();
+      return;
+    }
+    if (kind === 'move' || kind === 'scale') commitTransform();
   }
 
   canvas.addEventListener('pointerup', releasePointer);
@@ -985,8 +1153,7 @@
     if (gesture) releasePointer(event);
   });
 
-  // Chromium ma własny autoscroll na środkowym przycisku — inaczej odpalałby
-  // się razem z naszym przesuwaniem widoku.
+  // Chromium ma własny autoscroll na środkowym przycisku.
   canvas.addEventListener('mousedown', (event) => {
     if (event.button === 1) event.preventDefault();
   });
@@ -994,28 +1161,31 @@
     if (event.button === 1) event.preventDefault();
   });
 
+  function zoomAt(sx, sy, factor) {
+    const before = screenToWorld(sx, sy);
+    const next = clampScale(view.scale * factor);
+    if (next === view.scale) return;
+    view.scale = next;
+    const after = screenToWorld(sx, sy);
+    view.x = clampViewX(view.x + before.x - after.x, view.scale);
+    view.y = clampViewY(view.y + before.y - after.y);
+    tiles.clear();
+    updateZoomIndicator();
+    scheduleRender();
+  }
+
   canvas.addEventListener(
     'wheel',
     (event) => {
       event.preventDefault();
       if (event.ctrlKey || event.metaKey) {
         const rect = canvas.getBoundingClientRect();
-        const sx = event.clientX - rect.left;
-        const sy = event.clientY - rect.top;
-        const before = screenToWorld(sx, sy);
-        view.scale = core.clamp(view.scale * Math.exp(-event.deltaY * 0.01), MIN_SCALE, MAX_SCALE);
-        const after = screenToWorld(sx, sy);
-        view.x += before.x - after.x;
-        view.y += before.y - after.y;
-        tiles.clear();
-        updateZoomIndicator();
+        zoomAt(event.clientX - rect.left, event.clientY - rect.top, Math.exp(-event.deltaY * 0.01));
       } else {
-        view.x += event.deltaX / view.scale;
-        view.y += event.deltaY / view.scale;
+        view.x = clampViewX(view.x + event.deltaX / view.scale, view.scale);
+        view.y = clampViewY(view.y + event.deltaY / view.scale);
+        scheduleRender();
       }
-      view.x = clampViewX(view.x, view.scale);
-      view.y = clampViewY(view.y);
-      scheduleRender();
     },
     { passive: false },
   );
@@ -1027,18 +1197,18 @@
   document.addEventListener('paste', (event) => {
     const items = event.clipboardData && event.clipboardData.items;
     if (!items) return;
-    for (const item of items) {
-      if (item.type.indexOf('image') === -1) continue;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== 0) continue;
       event.preventDefault();
-      const file = item.getAsFile();
+      const file = items[i].getAsFile();
       if (file) insertImageFile(file);
+      return;
     }
   });
 
   async function insertImageFile(file) {
-    let dataUrl;
     try {
-      dataUrl = await new Promise((resolve, reject) => {
+      const dataUrl = await new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(reader.result);
         reader.onerror = () => reject(reader.error);
@@ -1048,16 +1218,16 @@
       element.src = dataUrl;
       await element.decode();
 
+      // Rozmiar liczymy w jednostkach ŚWIATA, nie ekranu. Przy oddaleniu obraz
+      // dopasowany do ekranu wychodził szerszy niż kartka i odpadał na
+      // walidacji granic — właśnie dlatego wklejanie potrafiło nic nie robić.
       const center = screenToWorld(viewW / 2, viewH / 2);
-      const maxDim = 500 / view.scale;
-      const fit = Math.min(1, maxDim / Math.max(element.width, element.height));
-      const w = element.width * fit;
-      const h = element.height * fit;
+      const box = core.fitImageIntoPage(element.width, element.height, center.x, center.y, PASTE_PAGE_FRACTION);
 
-      // Obraz zapisujemy w ok. 2× rozmiaru wyświetlania — duży zrzut ekranu
+      // Zapisujemy w ok. 2× rozmiaru wyświetlania — duży zrzut ekranu
       // rozdmuchałby plik o megabajty bez widocznego zysku.
-      const storeW = Math.max(1, Math.min(element.width, Math.round(w * PASTE_STORE_SCALE)));
-      const storeH = Math.max(1, Math.min(element.height, Math.round(h * PASTE_STORE_SCALE)));
+      const storeW = Math.max(1, Math.min(element.width, Math.round(box.w * 2)));
+      const storeH = Math.max(1, Math.min(element.height, Math.round(box.h * 2)));
       let stored = dataUrl;
       if (storeW < element.width || storeH < element.height) {
         const off = document.createElement('canvas');
@@ -1066,14 +1236,18 @@
         off.getContext('2d').drawImage(element, 0, 0, storeW, storeH);
         stored = off.toDataURL('image/png');
       }
+      if (stored.length > core.MAX_IMAGE_BYTES) {
+        flashTitle('MathNotes — obraz jest za duży (limit 5 MB)', 3500);
+        return;
+      }
 
-      const box = clampWorld({ x: center.x - w / 2, y: center.y - h / 2 });
-      const image = { id: core.createId(), x: box.x, y: box.y, w, h, dataUrl: stored };
+      const image = { id: core.createId(), ...box, dataUrl: stored };
       notebook.addImage(image);
       bitmaps.set(image.id, await createImageBitmap(element));
       invalidateTiles(core.imageBounds(image));
       notebook.stopCapturing();
       render();
+      flashTitle('MathNotes — wklejono obraz');
     } catch {
       flashTitle('MathNotes — nie udało się wstawić obrazu', 3000);
     }
@@ -1095,7 +1269,7 @@
     if (list.length === 0) {
       const empty = document.createElement('div');
       empty.id = 'annotation-empty';
-      empty.textContent = 'Brak adnotacji. Naciśnij B, aby dodać jedną w bieżącym miejscu.';
+      empty.textContent = 'Brak adnotacji. Kliknij zakładkę albo naciśnij B, aby dodać jedną w bieżącym miejscu.';
       annotationListEl.append(empty);
       return;
     }
@@ -1139,6 +1313,11 @@
     view.y = clampViewY(y - viewH / 2 / view.scale);
     closeModal(annotationListOverlay);
     render();
+  }
+
+  function openAnnotationList() {
+    renderAnnotationList();
+    openModal(annotationListOverlay);
   }
 
   function promptAnnotationName() {
@@ -1209,6 +1388,7 @@
     ['online-join-overlay', 'online-join-cancel'],
     ['online-share-overlay', 'online-share-close'],
     ['online-settings-overlay', 'online-settings-cancel'],
+    ['grid-overlay', 'grid-close'],
     ['keymap-overlay', 'keymap-close'],
   ]) {
     const overlay = $(overlayId);
@@ -1255,8 +1435,8 @@
     true,
   );
 
-  // Krótkie kliknięcie = akcja domyślna, przytrzymanie = flyout z wariantami.
-  function attachHoldFlyout(button, flyout, onClick) {
+  /** Krótkie kliknięcie = akcja domyślna, przytrzymanie = akcja dodatkowa. */
+  function attachHold(button, onHold, onClick) {
     let timer = 0;
     let held = false;
 
@@ -1265,7 +1445,7 @@
       held = false;
       timer = setTimeout(() => {
         held = true;
-        showFlyout(flyout, button);
+        onHold();
       }, HOLD_MS);
     });
     const cancel = () => clearTimeout(timer);
@@ -1280,6 +1460,10 @@
     });
   }
 
+  function attachHoldFlyout(button, flyout, onClick) {
+    attachHold(button, () => showFlyout(flyout, button), onClick);
+  }
+
   // ==========================================================================
   // Toolbar
   // ==========================================================================
@@ -1288,8 +1472,7 @@
   const brushFlyout = $('brush-flyout');
   const eraserFlyout = $('eraser-flyout');
 
-  // Mała kropka czyta się jako czubek pióra znacznie lepiej niż domyślny
-  // krzyżyk, który zasłania kartkę.
+  // Mała kropka czyta się jako czubek pióra lepiej niż domyślny krzyżyk.
   const PEN_CURSOR_SVG =
     '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14">' +
     '<circle cx="7" cy="7" r="3.2" fill="white" stroke="black" stroke-width="1.2"/></svg>';
@@ -1311,7 +1494,7 @@
 
   function setTool(name) {
     tool = name;
-    if (tool !== 'cursor') selectedImageId = null;
+    if (tool !== 'cursor') clearSelection();
     for (const [key, button] of Object.entries(toolButtons)) {
       button.classList.toggle('active', key === name);
     }
@@ -1412,7 +1595,7 @@
     showFlyout(colorFlyout, colorBtn);
   });
 
-  // --- grubość -------------------------------------------------------------
+  // --- grubość i nacisk ----------------------------------------------------
 
   const widthBtn = $('width-btn');
   const widthFlyout = $('width-flyout');
@@ -1429,8 +1612,6 @@
 
   widthSlider.addEventListener('input', () => applyWidth(parseInt(widthSlider.value, 10) || 1));
   widthBtn.addEventListener('click', () => showFlyout(widthFlyout, widthBtn));
-
-  // --- nacisk --------------------------------------------------------------
 
   const pressureBtn = $('pressure-toggle');
 
@@ -1453,35 +1634,29 @@
   }
 
   undoBtn.addEventListener('click', () => {
+    clearSelection();
     notebook.undo();
     updateHistoryButtons();
   });
   redoBtn.addEventListener('click', () => {
+    clearSelection();
     notebook.redo();
     updateHistoryButtons();
   });
-  $('add-bookmark').addEventListener('click', addAnnotationAtCurrentView);
+
+  // Klik dodaje adnotację, przytrzymanie otwiera ich listę.
+  const bookmarkBtn = $('add-bookmark');
+  bookmarkBtn.title = 'Dodaj adnotację (B) — przytrzymaj, aby otworzyć listę';
+  attachHold(bookmarkBtn, openAnnotationList, addAnnotationAtCurrentView);
 
   function contentBBox() {
-    let minY = Infinity;
-    let maxY = -Infinity;
-    let minX = Infinity;
-    let maxX = -Infinity;
+    const boxes = [];
     for (const map of notebook.strokes) {
       const entry = entryFor(map);
-      if (!entry) continue;
-      minX = Math.min(minX, entry.bounds.minX);
-      maxX = Math.max(maxX, entry.bounds.maxX);
-      minY = Math.min(minY, entry.bounds.minY);
-      maxY = Math.max(maxY, entry.bounds.maxY);
+      if (entry) boxes.push(entry.bounds);
     }
-    eachImage((image) => {
-      minX = Math.min(minX, image.x);
-      maxX = Math.max(maxX, image.x + image.w);
-      minY = Math.min(minY, image.y);
-      maxY = Math.max(maxY, image.y + image.h);
-    });
-    return Number.isFinite(minY) ? { minX, minY, maxX, maxY } : null;
+    eachImage((image) => boxes.push(core.imageBounds(image)));
+    return core.unionBounds(boxes);
   }
 
   $('scroll-top-btn').addEventListener('click', () => {
@@ -1498,18 +1673,80 @@
   const zoomIndicator = $('zoom-indicator');
 
   function updateZoomIndicator() {
-    zoomIndicator.textContent = Math.round(view.scale * 100) + '%';
+    zoomIndicator.textContent = Math.round(zoomLevel() * 100) + '%';
   }
 
-  zoomIndicator.addEventListener('click', () => resetZoom());
-
   function resetZoom() {
-    view.scale = 1;
+    view.scale = clampScale(fitScale());
     view.x = clampViewX(view.x, view.scale);
     tiles.clear();
     updateZoomIndicator();
     render();
   }
+
+  zoomIndicator.addEventListener('click', resetZoom);
+
+  // --- motyw ---------------------------------------------------------------
+
+  function setTheme(next) {
+    theme = core.THEMES.includes(next) ? next : 'dark';
+    document.documentElement.dataset.theme = theme;
+    tiles.clear();
+    savePrefs();
+    render();
+  }
+
+  // --- kratka --------------------------------------------------------------
+
+  const gridOverlay = $('grid-overlay');
+  const gridEnabled = $('grid-enabled');
+  const gridColor = $('grid-color');
+  const gridOpacity = $('grid-opacity');
+  const gridOpacityLabel = $('grid-opacity-label');
+  const gridPresets = $('grid-presets');
+
+  function updateGrid(patch) {
+    const next = core.validateGrid({ ...currentGrid(), ...patch });
+    notebook.setMeta('grid', next);
+    notebook.stopCapturing();
+    tiles.clear();
+    render();
+    return next;
+  }
+
+  function syncGridPanel() {
+    const grid = currentGrid();
+    gridEnabled.checked = grid.enabled;
+    gridColor.value = grid.color;
+    gridOpacity.value = String(Math.round(grid.opacity * 100));
+    gridOpacityLabel.textContent = Math.round(grid.opacity * 100) + '%';
+  }
+
+  function openGridPanel() {
+    gridPresets.replaceChildren();
+    for (const preset of GRID_PRESETS) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'grid-preset';
+      button.style.background = preset;
+      button.title = preset;
+      button.addEventListener('click', () => {
+        updateGrid({ color: preset, enabled: true });
+        syncGridPanel();
+      });
+      gridPresets.append(button);
+    }
+    syncGridPanel();
+    openModal(gridOverlay);
+  }
+
+  gridEnabled.addEventListener('change', () => updateGrid({ enabled: gridEnabled.checked }));
+  gridColor.addEventListener('input', () => updateGrid({ color: gridColor.value, enabled: true }));
+  gridOpacity.addEventListener('input', () => {
+    const value = core.clamp(parseInt(gridOpacity.value, 10) || 2, 2, 100);
+    gridOpacityLabel.textContent = value + '%';
+    updateGrid({ opacity: value / 100 });
+  });
 
   // ==========================================================================
   // Skróty klawiszowe
@@ -1518,7 +1755,7 @@
   const KEYMAP_ACTIONS = [
     { id: 'pen', label: 'Pióro' },
     { id: 'eraser', label: 'Gumka' },
-    { id: 'cursor', label: 'Kursor (przesuwanie obiektów)' },
+    { id: 'cursor', label: 'Kursor (zaznaczanie i przesuwanie)' },
     { id: 'annotation', label: 'Dodaj adnotację' },
     { id: 'annotationList', label: 'Lista adnotacji' },
     { id: 'widthDown', label: 'Mniejsza grubość' },
@@ -1688,6 +1925,12 @@
           return;
         }
       }
+      if (selectionBox) {
+        clearSelection();
+        render();
+        event.preventDefault();
+        return;
+      }
     }
 
     const tag = document.activeElement && document.activeElement.tagName;
@@ -1698,20 +1941,22 @@
 
     if (mod && key.toLowerCase() === 'z' && event.shiftKey) {
       event.preventDefault();
+      clearSelection();
       notebook.redo();
       updateHistoryButtons();
       return;
     }
     if (mod && key.toLowerCase() === 'z') {
       event.preventDefault();
+      clearSelection();
       notebook.undo();
       updateHistoryButtons();
       return;
     }
     if (mod) return; // resztę skrótów z modyfikatorem obsługuje natywne menu
 
-    if ((key === 'Delete' || key === 'Backspace') && tool === 'cursor' && selectedImageId) {
-      deleteSelectedImage();
+    if ((key === 'Delete' || key === 'Backspace') && (selectedStrokes.size > 0 || selectedImages.size > 0)) {
+      deleteSelection();
       event.preventDefault();
       return;
     }
@@ -1765,6 +2010,59 @@
   }
 
   // ==========================================================================
+  // Reakcja na zmiany dokumentu
+  // ==========================================================================
+
+  function markLive(map) {
+    let live = liveStrokes.get(map);
+    if (live) clearTimeout(live.timer);
+    else live = { drawn: 0 };
+    live.timer = setTimeout(() => {
+      liveStrokes.delete(map);
+      const entry = entryFor(map);
+      if (entry) invalidateTiles(entry.bounds);
+      scheduleRender();
+    }, LIVE_STROKE_QUIET_MS);
+    liveStrokes.set(map, live);
+    return live;
+  }
+
+  function handleDocChange(events, transaction, local) {
+    let structural = false;
+
+    for (const event of events) {
+      const target = event.target;
+      // Dosypanie punktów do kreski: unieważniamy tylko kafle tej kreski.
+      if (target && target.parent && target.parent.get && target.parent.get('pts') === target) {
+        const map = target.parent;
+        strokeCache.delete(map);
+        if (map === activeStrokeMap) continue;
+
+        const live = markLive(map);
+        const entry = entryFor(map);
+        if (entry) {
+          if (!local) paintLive(entry.stroke, live.drawn);
+          live.drawn = core.pointCount(entry.stroke);
+        }
+        continue;
+      }
+      structural = true;
+      if (target && target.toJSON) strokeCache.delete(target);
+    }
+
+    if (structural) {
+      strokeCache.clear();
+      tiles.clear();
+      if (selectionBox) recomputeSelectionBox();
+      renderAnnotationList();
+    }
+
+    if (local) setDirty(true);
+    updateHistoryButtons();
+    scheduleRender();
+  }
+
+  // ==========================================================================
   // Pliki
   // ==========================================================================
 
@@ -1780,13 +2078,18 @@
     return true;
   }
 
-  // Autozapis pisze tylko do pliku, który już istnieje — nigdy nie otwiera
-  // dialogu za plecami rysującego.
   async function autosaveTick() {
     if (!dirty) return;
     const { state } = notebook.toState();
     const result = await window.api.autosave(state);
     if (result && result.ok) setDirty(false);
+  }
+
+  function resetView() {
+    view = { x: 0, y: 0, scale: clampScale(fitScale()) };
+    view.x = clampViewX(view.x, view.scale);
+    tiles.clear();
+    updateZoomIndicator();
   }
 
   function applyOpened(payload) {
@@ -1803,9 +2106,8 @@
     replaceNotebook();
     notebook.loadState(normalized.state);
     docName = payload.name;
-    view = { x: 0, y: 0, scale: 1 };
+    resetView();
     setDirty(false);
-    updateZoomIndicator();
     updateHistoryButtons();
     renderAnnotationList();
     render();
@@ -1831,9 +2133,8 @@
     await window.api.newNotebook();
     replaceNotebook();
     docName = null;
-    view = { x: 0, y: 0, scale: 1 };
+    resetView();
     setDirty(false);
-    updateZoomIndicator();
     updateHistoryButtons();
     renderAnnotationList();
     render();
@@ -1883,14 +2184,14 @@
         const offCtx = off.getContext('2d');
 
         offCtx.setTransform(1, 0, 0, 1, 0, 0);
-        offCtx.fillStyle = '#000000';
+        offCtx.fillStyle = pageColor();
         offCtx.fillRect(0, 0, off.width, off.height);
 
         const k = scale * RASTER;
         offCtx.setTransform(k, 0, 0, k, -minX * k, -worldTop * k);
 
         const clip = { minX, maxX: minX + contentW, minY: worldTop, maxY: worldTop + sliceH };
-        drawImagesInto(offCtx, clip);
+        drawImagesInto(offCtx, clip, false);
         for (const map of notebook.strokes) {
           const entry = entryFor(map);
           if (!entry || !core.boundsIntersect(entry.bounds, clip)) continue;
@@ -1925,6 +2226,7 @@
   const settingsOverlay = $('online-settings-overlay');
 
   let onlineSettings = onlineApi.loadSettings();
+  let identity = onlineApi.loadIdentity();
   let session = null;
   let peers = [];
 
@@ -1936,6 +2238,67 @@
     if (!sessionActive()) return false;
     flashTitle('MathNotes — zakończ sesję online, żeby zmienić notatnik', 3500);
     return true;
+  }
+
+  /** Nick i kolor, którymi przedstawiasz się innym. Blok wstawiamy w dwa panele. */
+  function renderIdentityBlock(container) {
+    container.replaceChildren();
+
+    const label = document.createElement('label');
+    label.textContent = 'Twój nick i kolor';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = onlineApi.MAX_NAME_LENGTH;
+    input.placeholder = 'Nick widoczny dla innych';
+    input.value = identity.name;
+
+    const colors = document.createElement('div');
+    colors.className = 'identity-colors';
+
+    const preview = document.createElement('div');
+    preview.className = 'identity-preview';
+    const previewLabel = document.createElement('span');
+    previewLabel.textContent = 'Tak zobaczą Cię inni:';
+    const previewName = document.createElement('span');
+    previewName.className = 'peer-name';
+    preview.append(previewLabel, previewName);
+
+    const refreshPreview = () => {
+      previewName.textContent = identity.name; // nigdy innerHTML
+      previewName.style.background = identity.color;
+      for (const button of colors.children) {
+        button.setAttribute('aria-pressed', String(button.dataset.color === identity.color));
+      }
+    };
+
+    const apply = (patch) => {
+      identity = onlineApi.saveIdentity({ ...identity, ...patch });
+      if (sessionActive()) session.setIdentity(identity);
+      refreshPreview();
+      renderPeers();
+    };
+
+    input.addEventListener('input', () => apply({ name: input.value }));
+    // Po oczyszczeniu pokazujemy, co naprawdę zostało zapisane.
+    input.addEventListener('blur', () => {
+      input.value = identity.name;
+    });
+    input.addEventListener('keydown', (event) => event.stopPropagation());
+
+    for (const color of onlineApi.PEER_COLORS) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'identity-color';
+      button.dataset.color = color;
+      button.style.background = color;
+      button.title = color;
+      button.addEventListener('click', () => apply({ color }));
+      colors.append(button);
+    }
+
+    container.append(label, input, colors, preview);
+    refreshPreview();
   }
 
   function updateOnlineStatusUI() {
@@ -1987,6 +2350,7 @@
 
   function startSession(code, options) {
     if (sessionActive()) {
+      renderIdentityBlock($('share-identity'));
       openModal(shareOverlay);
       return;
     }
@@ -2007,7 +2371,9 @@
       renderPeers();
     });
     session.on('status', ({ connected }) => {
-      shareStatus.textContent = connected ? 'Sesja aktywna — udostępnij ten kod.' : 'Łączenie z serwerem sygnalizacyjnym…';
+      shareStatus.textContent = connected
+        ? 'Sesja aktywna — udostępnij ten kod.'
+        : 'Łączenie z serwerem sygnalizacyjnym…';
       updateOnlineStatusUI();
     });
     session.on('error', (message) => {
@@ -2023,7 +2389,7 @@
     shareStatus.textContent = 'Łączenie z serwerem sygnalizacyjnym…';
     let created;
     try {
-      created = session.start({ code: code || undefined, settings: onlineSettings });
+      created = session.start({ code: code || undefined, settings: onlineSettings, identity });
     } catch (err) {
       session = null;
       window.alert(err.message);
@@ -2032,6 +2398,7 @@
 
     shareCode.value = created;
     closeModal(joinOverlay);
+    renderIdentityBlock($('share-identity'));
     openModal(shareOverlay);
     updateOnlineStatusUI();
   }
@@ -2062,11 +2429,13 @@
 
   function openJoin() {
     if (sessionActive()) {
+      renderIdentityBlock($('share-identity'));
       openModal(shareOverlay);
       return;
     }
     joinInput.value = '';
     $('join-mode-fresh').checked = true;
+    renderIdentityBlock($('join-identity'));
     openModal(joinOverlay);
     joinInput.focus();
   }
@@ -2121,19 +2490,11 @@
     }
   });
 
-  onlineStatusBtn.addEventListener('click', () => {
-    if (sessionActive()) openModal(shareOverlay);
-    else openJoin();
-  });
+  onlineStatusBtn.addEventListener('click', openJoin);
 
   // ==========================================================================
   // Akcje menu
   // ==========================================================================
-
-  function openAnnotationList() {
-    renderAnnotationList();
-    openModal(annotationListOverlay);
-  }
 
   const handlers = {
     'file:new': doNew,
@@ -2142,28 +2503,33 @@
     'file:save-as': () => doSave(true),
     'file:export-pdf': exportPdf,
     'edit:undo': () => {
+      clearSelection();
       notebook.undo();
       updateHistoryButtons();
     },
     'edit:redo': () => {
+      clearSelection();
       notebook.redo();
       updateHistoryButtons();
     },
     'edit:keymap': openKeymap,
-    'view:annotation-list': openAnnotationList,
     'view:annotation-lines': (visible) => {
       showAnnotationLines = visible !== false;
       render();
     },
+    'view:grid': openGridPanel,
+    'view:theme': setTheme,
     'view:reset': () => {
-      view = { x: 0, y: 0, scale: 1 };
-      tiles.clear();
-      updateZoomIndicator();
+      resetView();
       render();
     },
     'online:start': () => {
-      if (sessionActive()) openModal(shareOverlay);
-      else startSession(null, { fresh: false });
+      if (sessionActive()) {
+        renderIdentityBlock($('share-identity'));
+        openModal(shareOverlay);
+      } else {
+        startSession(null, { fresh: false });
+      }
     },
     'online:join': openJoin,
     'online:copy-invite': copyInvite,
@@ -2189,13 +2555,13 @@
 
   detachNotebook = notebook.observe(handleDocChange);
   rebuildKeyToAction();
+  document.documentElement.dataset.theme = theme;
   setBrushType(brushType);
   setEraseMode(eraseMode);
   setPressureSensitive(pressureSensitive);
   setColor(currentColor);
   applyWidth(currentWidth);
   setTool('pen');
-  updateZoomIndicator();
   updateOnlineStatusUI();
   updateHistoryButtons();
   refreshTitle();
@@ -2203,6 +2569,7 @@
 
   new ResizeObserver(resizeCanvas).observe(mainArea);
   resizeCanvas();
+  resetZoom();
   setInterval(autosaveTick, AUTOSAVE_INTERVAL_MS);
   window.api.ready();
 })();

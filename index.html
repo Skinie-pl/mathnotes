@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="pl">
+<html lang="pl" data-theme="dark">
 <head>
 <meta charset="UTF-8" />
 <meta
@@ -107,6 +107,7 @@
     <div id="online-join-box">
       <div class="modal-title">Dołącz do sesji online</div>
       <input id="online-join-input" type="text" placeholder="Kod zaproszenia" autocomplete="off" spellcheck="false" />
+      <div class="identity-block" id="join-identity"></div>
       <div id="online-join-mode">
         <label class="choice">
           <input type="radio" name="join-mode" id="join-mode-fresh" checked />
@@ -132,6 +133,7 @@
         <input id="online-share-code" type="text" readonly />
         <button id="online-share-copy">Kopiuj</button>
       </div>
+      <div class="identity-block" id="share-identity"></div>
       <div id="online-share-hint">Podaj ten kod drugiej osobie — wybiera „Dołącz do sesji” i go wkleja. Maks. 10 osób naraz. Kod nie jest nigdzie zapisywany i znika razem z sesją.</div>
       <div class="modal-actions">
         <button id="online-share-settings">Ustawienia</button>
@@ -156,6 +158,30 @@
       <div class="modal-actions">
         <button id="online-settings-cancel">Anuluj</button>
         <button id="online-settings-save">Zapisz</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="grid-overlay" class="modal-hidden">
+    <div id="grid-box">
+      <div class="modal-title">Kratka w tle</div>
+      <label class="switch">
+        <input type="checkbox" id="grid-enabled" />
+        <span>Pokaż kratkę</span>
+      </label>
+      <div class="settings-hint">Rozstaw dobiera się do powiększenia — przy przybliżaniu w oczkach pojawiają się kolejne podziałki, przy oddalaniu najdrobniejsze znikają.</div>
+      <label for="grid-color">Kolor linii</label>
+      <div class="grid-color-row">
+        <input type="color" id="grid-color" />
+        <div id="grid-presets"></div>
+      </div>
+      <label for="grid-opacity">Przezroczystość</label>
+      <div class="grid-opacity-row">
+        <input type="range" id="grid-opacity" min="2" max="100" value="18" />
+        <span id="grid-opacity-label">18%</span>
+      </div>
+      <div class="modal-actions">
+        <button id="grid-close">Gotowe</button>
       </div>
     </div>
   </div>

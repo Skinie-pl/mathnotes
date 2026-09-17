@@ -31,12 +31,18 @@ npm test
   zmienna grubość wg nacisku pióra.
 - **Gumka** w dwóch trybach: „Obiekty” kasuje całe kreski i obrazy, „Obszar”
   wycina fragment i dzieli kreskę na pozostałe kawałki.
-- **Kursor** — zaznaczanie, przesuwanie i skalowanie obrazów za uchwyty narożne,
-  z zachowaniem proporcji. `Delete` usuwa zaznaczony obraz.
+- **Kursor** — zaznaczanie ramką dowolnego fragmentu rysunku (kresek i obrazów),
+  przesuwanie i skalowanie całego zaznaczenia za uchwyty narożne, z zachowaniem
+  proporcji. Kliknięcie zaznacza pojedynczy obiekt, `Delete` usuwa zaznaczenie,
+  `Esc` je zdejmuje.
 - **Obrazy ze schowka** (`Ctrl/Cmd+V`), zapisywane w ok. 2× rozmiaru
   wyświetlania, żeby duży zrzut ekranu nie rozdmuchał pliku.
-- **Adnotacje** — poziome linie z etykietą, lista z przeskokiem i usuwaniem,
-  przełącznik widoczności w menu Widok.
+- **Adnotacje** — poziome linie z etykietą. Klik na zakładce dodaje adnotację,
+  **przytrzymanie otwiera ich listę** z przeskokiem i usuwaniem; widoczność linii
+  przełącza się w menu Widok.
+- **Kratka w tle** z własnym kolorem i przezroczystością, z rozstawem dobieranym
+  do powiększenia.
+- **Tryb biały** — biała kartka zamiast czarnej (menu Widok).
 - **Eksport do PDF** ze stronicowaniem A4 (do 300 stron).
 - **Konfigurowalne skróty klawiszowe** z panelem i przywracaniem domyślnych.
 - **Autozapis** co 10 minut do już otwartego pliku oraz dopytanie o zapis przy
@@ -107,8 +113,8 @@ Binarnego stanu Yjs nie zapisujemy — format ma być niezależny od biblioteki.
 
 ```jsonc
 {
-  "version": 3,
-  "meta": { "title": "" },
+  "version": 4,
+  "meta": { "title": "", "grid": { "enabled": false, "color": "#4c8dff", "opacity": 0.18 } },
   "strokes": [{
     "id": "a1",
     "tool": "pen",
@@ -130,6 +136,7 @@ bump wersji to dopisanie jednego kroku:
   `{x, y, p}`, grubość nazywała się `width`, obrazy miały `width`/`height`,
   a pliki w ogóle nie miały pola `version`.
 - **2 → 3**: dochodzą adnotacje, znika tło strony z `meta`.
+- **3 → 4**: do `meta` wchodzą ustawienia kratki.
 
 Plik z wersją nowszą niż `FILE_FORMAT_VERSION` jest odrzucany z czytelnym
 błędem, a nie otwierany z utratą danych. `normalizeState` zwraca
@@ -172,8 +179,32 @@ jest zmianą, którą da się cofnąć w pustkę.
 Kartka ma stałą szerokość `PAGE_WIDTH` (900 px) i przewija się w dół bez końca.
 Widok trzyma współrzędne świata lewego górnego rogu plus powiększenie; w poziomie
 jest przycięty do kartki z marginesem `PAGE_PAN_MARGIN`, więc nie da się odpłynąć
-w bok. Powiększenie 5–2000 %, wskaźnik procentów na dole toolbara resetuje je
-kliknięciem.
+w bok.
+
+**100 % to szerokość kartki dopasowana do okna** i zarazem maksymalne oddalenie —
+dalej jest już tylko pustka wokół kartki, więc nie ma po co oddalać. W drugą
+stronę można przybliżyć do 800 %. Wskaźnik procentów na dole toolbara resetuje
+powiększenie kliknięciem. Ponieważ 100 % zależy od szerokości okna, po zmianie
+rozmiaru trzymamy ten sam poziom procentowy, a nie tę samą skalę.
+
+### Kratka w tle
+
+Rozstaw dobiera się do powiększenia (`gridStep` w `core.js`): krok jest tak
+dobrany, żeby oczko miało na ekranie co najmniej `GRID_MIN_SCREEN` pikseli, ale
+mniej niż pięciokrotność tej wartości. Przy przybliżaniu w istniejące oczka
+wchodzą kolejne podziałki, przy oddalaniu najdrobniejsze znikają — tak jak
+w programach do rysowania. Linie grube rysowane są na drobnych, więc nakładając
+się wychodzą wyraźniejsze.
+
+Kolor i przezroczystość kratki są ustawieniem **strony**, nie aplikacji: siedzą
+w `meta.grid` i wędrują razem z plikiem oraz z sesją online.
+
+### Tryb biały
+
+Motyw zmienia tło kartki i skórę interfejsu. Atrament przechodzi przez
+`themeInk`: skrajne szarości są odwracane (biała kreska na białej kartce byłaby
+niewidoczna), a nasycone kolory zostają bez zmian, bo czytają się na obu tłach.
+Zmieniamy tylko sposób rysowania — kolory zapisane w pliku zostają nietknięte.
 
 Gotowe kreski trzymane są w kafelkach po `TILE_HEIGHT` pikseli świata;
 przerysowywane są tylko kafle widoczne i zmienione, a kreski odrzucane po
@@ -239,8 +270,14 @@ Podział jest jednoznaczny wyłącznie dlatego, że obie połowy mają stałą d
 | Kursory | ~20 Hz | Z domknięciem ostatniej pozycji, żeby cudzy kursor nie zamarzał w locie. |
 | Rozmiar dokumentu | 200 MB | Po przekroczeniu sesja przerywa się z komunikatem. |
 
-Ustawienia połączenia (adresy sygnalizacji, TURN) żyją w `localStorage` tego
-komputera, nigdy w pliku notatnika.
+Nick i kolor ustawia się **przed dołączeniem**, w panelu dołączania (i w panelu
+sesji, gdy to ty ją prowadzisz). Podgląd pokazuje dokładnie to, co zobaczą inni.
+Etykieta z nickiem wyświetla się nieco w prawo i w dół od cudzego kursora, żeby
+nie zasłaniała miejsca, w którym ktoś właśnie rysuje. Nick przechodzi przez tę
+samą sanityzację co każda inna treść od innych osób.
+
+Ustawienia połączenia (adresy sygnalizacji, TURN) oraz nick i kolor żyją
+w `localStorage` tego komputera, nigdy w pliku notatnika.
 
 Przy dołączaniu domyślnie wybrany jest **nowy notatnik**, żeby nikt przypadkiem
 nie wysłał obcym osobom swoich notatek. „Nowy notatnik” oznacza nowy `Y.Doc`,
@@ -263,11 +300,12 @@ i zapisywane w `localStorage`. Domyślnie:
 | Skrót | Akcja |
 | --- | --- |
 | `P` / `E` / `V` | Pióro / gumka / kursor |
+| `Delete` | Usuń zaznaczenie (narzędzie kursora) |
+| `Esc` | Zdejmij zaznaczenie, zamknij panel |
 | `B` / `L` | Dodaj adnotację / lista adnotacji |
 | `[` / `]` | Mniejsza / większa grubość |
 | `1`–`5` | Kolory z palety |
 | Strzałki | Przesuwanie widoku |
-| `Delete` | Usuń zaznaczony obraz (narzędzie kursora) |
 
 Skróty z modyfikatorem obsługuje natywne menu:
 

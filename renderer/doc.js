@@ -235,6 +235,78 @@
       return null;
     }
 
+    /**
+     * Przesuwa i skaluje zaznaczenie w jednej transakcji — czyli jednym kroku
+     * cofania. Najpierw sprawdzamy wszystko, potem zmieniamy: przekształcenie,
+     * które wypchnęłoby cokolwiek poza kartkę, nie wykonuje się wcale, zamiast
+     * przesunąć połowę zaznaczenia.
+     * @param {{ox: number, oy: number, k: number, dx: number, dy: number}} t
+     * @returns {boolean} czy zmiana została wykonana
+     */
+    transformSelection(strokeMaps, imageMaps, t) {
+      const strokePlan = [];
+      for (const map of strokeMaps) {
+        const stroke = core.validateStroke(map.toJSON());
+        if (!stroke) continue;
+        const moved = core.transformStroke(stroke, t);
+        const candidate = core.validateStroke({ ...stroke, ...moved });
+        if (!candidate) return false;
+        strokePlan.push({ map, candidate });
+      }
+
+      const imagePlan = [];
+      for (const map of imageMaps) {
+        const image = core.validateImage(map.toJSON());
+        if (!image) continue;
+        const candidate = core.validateImage({ ...image, ...core.transformImage(image, t) });
+        if (!candidate) return false;
+        imagePlan.push({ map, candidate });
+      }
+
+      if (strokePlan.length === 0 && imagePlan.length === 0) return false;
+
+      this.transact(() => {
+        for (const { map, candidate } of strokePlan) {
+          map.set('size', candidate.size);
+          const pts = map.get('pts');
+          pts.delete(0, pts.length);
+          pts.push(candidate.pts);
+        }
+        for (const { map, candidate } of imagePlan) {
+          map.set('x', candidate.x);
+          map.set('y', candidate.y);
+          map.set('w', candidate.w);
+          map.set('h', candidate.h);
+        }
+      });
+      return true;
+    }
+
+    /** Usuwa zaznaczone kreski i obrazy jednym krokiem cofania. */
+    removeMany(strokeMaps, imageMaps) {
+      const strokeIndexes = [];
+      const all = this.strokes.toArray();
+      for (const map of strokeMaps) {
+        const index = all.indexOf(map);
+        if (index >= 0) strokeIndexes.push(index);
+      }
+      const imageIndexes = [];
+      const allImages = this.images.toArray();
+      for (const map of imageMaps) {
+        const index = allImages.indexOf(map);
+        if (index >= 0) imageIndexes.push(index);
+      }
+      if (strokeIndexes.length === 0 && imageIndexes.length === 0) return 0;
+
+      strokeIndexes.sort((a, b) => b - a);
+      imageIndexes.sort((a, b) => b - a);
+      this.transact(() => {
+        for (const index of strokeIndexes) this.strokes.delete(index, 1);
+        for (const index of imageIndexes) this.images.delete(index, 1);
+      });
+      return strokeIndexes.length + imageIndexes.length;
+    }
+
     addAnnotation(input) {
       const candidate = core.validateAnnotation({
         id: typeof input.id === 'string' ? input.id : core.createId(),

@@ -30,6 +30,7 @@
   const CURSOR_HZ = 20;
   const CURSOR_INTERVAL_MS = 1000 / CURSOR_HZ;
   const SETTINGS_KEY = 'mathnotes.online.settings';
+  const IDENTITY_KEY = 'mathnotes.online.identity';
   const MAX_NAME_LENGTH = 32;
   const MAX_URL_LENGTH = 200;
   const MAX_CREDENTIAL_LENGTH = 128;
@@ -134,6 +135,39 @@
     };
   }
 
+  /** Nick i kolor, którymi przedstawiasz się innym. Puste pola dostają losowe. */
+  function normalizeIdentity(raw, fallback) {
+    const base = fallback || randomIdentity();
+    const value = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    const name = sanitizeName(typeof value.name === 'string' ? value.name : '');
+    return {
+      name: name || base.name,
+      color: typeof value.color === 'string' && COLOR_RE.test(value.color) ? value.color : base.color,
+    };
+  }
+
+  function loadIdentity() {
+    try {
+      const saved = JSON.parse(globalThis.localStorage.getItem(IDENTITY_KEY));
+      // Bez zapisanej tożsamości losujemy raz i zapamiętujemy, żeby nick nie
+      // zmieniał się między sesjami.
+      if (saved === null) return saveIdentity(randomIdentity());
+      return normalizeIdentity(saved);
+    } catch {
+      return randomIdentity();
+    }
+  }
+
+  function saveIdentity(raw) {
+    const value = normalizeIdentity(raw);
+    try {
+      globalThis.localStorage.setItem(IDENTITY_KEY, JSON.stringify(value));
+    } catch {
+      // Brak localStorage nie może wywalić sesji.
+    }
+    return value;
+  }
+
   /** Stan awareness od innej osoby jest niezaufany jak każda inna treść. */
   function validatePeerState(value) {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -148,10 +182,10 @@
       typeof raw === 'object' &&
       Number.isFinite(raw.x) &&
       Number.isFinite(raw.y) &&
-      raw.x >= 0 &&
-      raw.x <= core.PAGE_WIDTH &&
-      raw.y >= 0 &&
-      raw.y <= core.MAX_PAGE_HEIGHT
+      raw.x >= core.MIN_WORLD_X &&
+      raw.x <= core.MAX_WORLD_X &&
+      raw.y >= core.MIN_WORLD_Y &&
+      raw.y <= core.MAX_WORLD_Y
     ) {
       cursor = { x: raw.x, y: raw.y };
     }
@@ -171,7 +205,7 @@
       this.notebook = notebook;
       this.provider = null;
       this.awareness = null;
-      this.identity = randomIdentity();
+      this.identity = loadIdentity();
 
       // Pełny kod zaproszenia trzymamy wyłącznie w pamięci, na potrzeby
       // przycisku „Kopiuj”. Nigdy do pliku, nigdy do logów.
@@ -214,6 +248,7 @@
      * @param {object} [options]
      * @param {string} [options.code] kod zaproszenia; brak = nowa sesja
      * @param {object} [options.settings] surowe ustawienia, przepuszczane przez normalizeSettings
+     * @param {object} [options.identity] nick i kolor; brak = zapamiętane
      * @returns {string} kod zaproszenia tej sesji
      */
     start(options) {
@@ -226,6 +261,7 @@
       const code = parsed ? opts.code.trim() : createInviteCode();
       const invite = parsed || parseInviteCode(code);
       const settings = normalizeSettings(opts.settings);
+      if (opts.identity) this.identity = normalizeIdentity(opts.identity, this.identity);
 
       const iceServers = DEFAULT_ICE_SERVERS.slice();
       if (settings.turn) iceServers.push({ ...settings.turn });
@@ -278,12 +314,22 @@
       this._emit('error', 'Dokument przekroczył limit rozmiaru — sesja przerwana.');
     }
 
+    /** Zmiana nicku albo koloru w trakcie trwającej sesji. */
+    setIdentity(raw) {
+      this.identity = normalizeIdentity(raw, this.identity);
+      if (this.awareness) {
+        this.awareness.setLocalStateField('name', this.identity.name);
+        this.awareness.setLocalStateField('color', this.identity.color);
+      }
+      return this.identity;
+    }
+
     /** Pozycja kursora w układzie strony, ograniczona do ~20 Hz. */
     setCursor(x, y) {
       if (!this.awareness) return;
       const point =
         Number.isFinite(x) && Number.isFinite(y)
-          ? { x: core.clamp(x, 0, core.PAGE_WIDTH), y: core.clamp(y, 0, core.MAX_PAGE_HEIGHT) }
+          ? { x: core.clamp(x, core.MIN_WORLD_X, core.MAX_WORLD_X), y: core.clamp(y, core.MIN_WORLD_Y, core.MAX_WORLD_Y) }
           : null;
 
       const now = Date.now();
@@ -349,6 +395,13 @@
     CURSOR_HZ,
     SIGNALING_TIMEOUT_MS,
     SETTINGS_KEY,
+    IDENTITY_KEY,
+    PEER_COLORS,
+    PEER_NAMES,
+    MAX_NAME_LENGTH,
+    normalizeIdentity,
+    loadIdentity,
+    saveIdentity,
     createInviteCode,
     parseInviteCode,
     isSignalingUrl,

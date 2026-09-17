@@ -551,6 +551,73 @@ test('gumka w trybie "object" kasuje także obrazy, w "area" nie', (t) => {
   assert.equal(notebook.images.length, 0);
 });
 
+test('transformSelection przesuwa i skaluje w jednym kroku cofania', (t) => {
+  const notebook = makeDoc();
+  t.after(() => notebook.destroy());
+
+  const a = notebook.addStroke(penStroke({ id: 'a1', pts: [100, 100, 0.5, 200, 200, 0.5] }));
+  const img = sampleImage(notebook, { id: 'i1', x: 100, y: 100, w: 40, h: 20 });
+
+  assert.equal(
+    notebook.transformSelection([a], [img], { ox: 0, oy: 0, k: 1, dx: 50, dy: -30 }),
+    true,
+  );
+  assert.deepEqual(a.get('pts').toArray(), [150, 70, 0.5, 250, 170, 0.5]);
+  assert.deepEqual([img.get('x'), img.get('y')], [150, 70]);
+
+  // Jedna transakcja = jeden krok cofania dla całego zaznaczenia.
+  notebook.undo();
+  assert.deepEqual(a.get('pts').toArray(), [100, 100, 0.5, 200, 200, 0.5]);
+  assert.deepEqual([img.get('x'), img.get('y')], [100, 100]);
+});
+
+test('transformSelection nie rusza niczego, gdy cokolwiek wyszłoby poza kartkę', (t) => {
+  // Przesunięcie połowy zaznaczenia byłoby gorsze niż nieprzesunięcie niczego.
+  const notebook = makeDoc();
+  t.after(() => notebook.destroy());
+
+  const zostaje = notebook.addStroke(penStroke({ id: 'a1', pts: [100, 100, 0.5, 120, 120, 0.5] }));
+  const wypada = notebook.addStroke(penStroke({ id: 'b2', pts: [800, 100, 0.5, 850, 120, 0.5] }));
+
+  assert.equal(
+    notebook.transformSelection([zostaje, wypada], [], { ox: 0, oy: 0, k: 1, dx: 500, dy: 0 }),
+    false,
+  );
+  assert.deepEqual(zostaje.get('pts').toArray(), [100, 100, 0.5, 120, 120, 0.5], 'pierwsza kreska nietknięta');
+  assert.deepEqual(wypada.get('pts').toArray(), [800, 100, 0.5, 850, 120, 0.5]);
+});
+
+test('skalowanie zaznaczenia zmienia też grubość kreski', (t) => {
+  const notebook = makeDoc();
+  t.after(() => notebook.destroy());
+
+  const a = notebook.addStroke(penStroke({ size: 4, pts: [100, 100, 0.5, 150, 100, 0.5] }));
+  notebook.transformSelection([a], [], { ox: 100, oy: 100, k: 2, dx: 0, dy: 0 });
+
+  assert.equal(a.get('size'), 8);
+  assert.deepEqual(a.get('pts').toArray(), [100, 100, 0.5, 200, 100, 0.5]);
+});
+
+test('removeMany usuwa kreski i obrazy jednym krokiem cofania', (t) => {
+  const notebook = makeDoc();
+  t.after(() => notebook.destroy());
+
+  const a = notebook.addStroke(penStroke({ id: 'a1' }));
+  const b = notebook.addStroke(penStroke({ id: 'b2' }));
+  const img = sampleImage(notebook, { id: 'i1' });
+  notebook.stopCapturing();
+
+  assert.equal(notebook.removeMany([a], [img]), 2);
+  assert.deepEqual(strokeIds(notebook), ['b2']);
+  assert.equal(notebook.images.length, 0);
+
+  notebook.undo();
+  assert.deepEqual(strokeIds(notebook).sort(), ['a1', 'b2'], 'jedno cofnięcie przywraca całą paczkę');
+  assert.equal(notebook.images.length, 1);
+
+  assert.equal(notebook.removeMany([], []), 0, 'puste zaznaczenie to brak zmiany');
+});
+
 test('adnotacje: dodawanie, usuwanie i lista posortowana po pionie', (t) => {
   const notebook = makeDoc();
   t.after(() => notebook.destroy());

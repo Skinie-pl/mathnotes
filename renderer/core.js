@@ -11,7 +11,7 @@
   const UNTITLED = 'Nowy notatnik';
 
   // Każda zmiana kształtu zapisywanego stanu = bump wersji + krok w normalizeState.
-  const FILE_FORMAT_VERSION = 3;
+  const FILE_FORMAT_VERSION = 4;
 
   // Kartka, nie płótno: stała szerokość, przewijanie w dół bez końca.
   const PAGE_WIDTH = 900;
@@ -28,6 +28,18 @@
   const MAX_WORLD_X = PAGE_WIDTH + PAGE_PAN_MARGIN;
   const MIN_WORLD_Y = -PAGE_PAN_MARGIN;
   const MAX_WORLD_Y = MAX_PAGE_HEIGHT;
+
+  // --- Kratka w tle --------------------------------------------------------
+  // Bazowy rozstaw w jednostkach świata. Przy przybliżaniu w oczka wchodzą
+  // kolejne podziałki, przy oddalaniu największe linie się zlewają — dlatego
+  // krok dobiera się do skali, a nie jest stały.
+  const GRID_BASE = 50;
+  const GRID_DIVISIONS = 5;
+  // Poniżej tylu pikseli na ekranie linie zlewają się w szarość.
+  const GRID_MIN_SCREEN = 7;
+  const DEFAULT_GRID = Object.freeze({ enabled: false, color: '#4c8dff', opacity: 0.18 });
+
+  const THEMES = Object.freeze(['dark', 'light']);
 
   const TOOLS = Object.freeze(['pen']);
   const BRUSHES = Object.freeze(['pen', 'soft']);
@@ -88,8 +100,9 @@
     'edit:undo',
     'edit:redo',
     'edit:keymap',
-    'view:annotation-list',
     'view:annotation-lines',
+    'view:grid',
+    'view:theme',
     'view:reset',
     'online:start',
     'online:join',
@@ -369,6 +382,85 @@
   }
 
   // ==========================================================================
+  // Przekształcanie zaznaczenia
+  // ==========================================================================
+
+  /**
+   * Punkt po przeskalowaniu względem `origin` i przesunięciu.
+   * @param {{ox: number, oy: number, k: number, dx: number, dy: number}} t
+   */
+  function applyTransform(x, y, t) {
+    return { x: (x - t.ox) * t.k + t.ox + t.dx, y: (y - t.oy) * t.k + t.oy + t.dy };
+  }
+
+  function transformBounds(bounds, t) {
+    const a = applyTransform(bounds.minX, bounds.minY, t);
+    const b = applyTransform(bounds.maxX, bounds.maxY, t);
+    return { minX: Math.min(a.x, b.x), minY: Math.min(a.y, b.y), maxX: Math.max(a.x, b.x), maxY: Math.max(a.y, b.y) };
+  }
+
+  /** Nowe `pts` i grubość kreski po przekształceniu. Nie mutuje oryginału. */
+  function transformStroke(stroke, t) {
+    const pts = stroke.pts.slice();
+    for (let i = 0; i < pts.length; i += 3) {
+      const p = applyTransform(pts[i], pts[i + 1], t);
+      pts[i] = roundCoord(p.x);
+      pts[i + 1] = roundCoord(p.y);
+    }
+    return { pts, size: clamp(stroke.size * t.k, MIN_STROKE_SIZE, MAX_STROKE_SIZE) };
+  }
+
+  function transformImage(image, t) {
+    const topLeft = applyTransform(image.x, image.y, t);
+    return {
+      x: roundCoord(topLeft.x),
+      y: roundCoord(topLeft.y),
+      w: roundCoord(image.w * t.k),
+      h: roundCoord(image.h * t.k),
+    };
+  }
+
+  function unionBounds(list) {
+    let out = null;
+    for (const bounds of list) {
+      if (!bounds) continue;
+      if (!out) out = { ...bounds };
+      else {
+        out.minX = Math.min(out.minX, bounds.minX);
+        out.minY = Math.min(out.minY, bounds.minY);
+        out.maxX = Math.max(out.maxX, bounds.maxX);
+        out.maxY = Math.max(out.maxY, bounds.maxY);
+      }
+    }
+    return out;
+  }
+
+  function boundsInside(inner, outer) {
+    return (
+      inner.minX >= outer.minX && inner.maxX <= outer.maxX && inner.minY >= outer.minY && inner.maxY <= outer.maxY
+    );
+  }
+
+  /**
+   * Prostokąt obrazu zmieszczony w granicach kartki: najpierw skala, potem
+   * dosunięcie. Bez tego wklejony przy oddaleniu obraz wychodzi poza kartkę
+   * i odpada na walidacji.
+   */
+  function fitImageIntoPage(width, height, centerX, centerY, maxFraction) {
+    const limitW = (MAX_WORLD_X - MIN_WORLD_X) * (maxFraction || 0.8);
+    const limitH = Math.min(limitW * 2, MAX_WORLD_Y - MIN_WORLD_Y);
+    const k = Math.min(1, limitW / width, limitH / height);
+    const w = roundCoord(Math.max(1, width * k));
+    const h = roundCoord(Math.max(1, height * k));
+    return {
+      w,
+      h,
+      x: roundCoord(clamp(centerX - w / 2, MIN_WORLD_X, MAX_WORLD_X - w)),
+      y: roundCoord(clamp(centerY - h / 2, MIN_WORLD_Y, MAX_WORLD_Y - h)),
+    };
+  }
+
+  // ==========================================================================
   // Walidacja — fail closed
   // ==========================================================================
 
@@ -461,9 +553,51 @@
     return { id: value.id, y: roundCoord(value.y), label: label || 'Bez nazwy' };
   }
 
+  function validateGrid(value) {
+    const grid = isPlainObject(value) ? value : {};
+    return {
+      enabled: grid.enabled === true,
+      color: typeof grid.color === 'string' && COLOR_RE.test(grid.color) ? grid.color : DEFAULT_GRID.color,
+      opacity: isFiniteNumber(grid.opacity) ? clamp(grid.opacity, 0.02, 1) : DEFAULT_GRID.opacity,
+    };
+  }
+
   function validateMeta(value) {
     const meta = isPlainObject(value) ? value : {};
-    return { title: sanitizeText(typeof meta.title === 'string' ? meta.title : '', MAX_TITLE_LENGTH) };
+    return {
+      title: sanitizeText(typeof meta.title === 'string' ? meta.title : '', MAX_TITLE_LENGTH),
+      grid: validateGrid(meta.grid),
+    };
+  }
+
+  /**
+   * Rozstaw kratki dobrany do powiększenia. Zwraca krok drobny i gruby
+   * w jednostkach świata; gruby to zawsze GRID_DIVISIONS razy drobny.
+   */
+  function gridStep(scale) {
+    let minor = GRID_BASE;
+    // Za gęsto na ekranie — bierzemy większy krok.
+    while (minor * scale < GRID_MIN_SCREEN) minor *= GRID_DIVISIONS;
+    // Za rzadko — schodzimy w podziałki, ale tylko póki zostają czytelne.
+    while ((minor / GRID_DIVISIONS) * scale >= GRID_MIN_SCREEN) minor /= GRID_DIVISIONS;
+    return { minor, major: minor * GRID_DIVISIONS };
+  }
+
+  /**
+   * Atrament dopasowany do motywu. Biała kreska na białej kartce byłaby
+   * niewidoczna, więc skrajne szarości są odwracane; nasycone kolory zostają,
+   * bo czytają się na obu tłach.
+   */
+  function themeInk(color, theme) {
+    if (theme !== 'light') return color;
+    const r = parseInt(color.slice(1, 3), 16);
+    const g = parseInt(color.slice(3, 5), 16);
+    const b = parseInt(color.slice(5, 7), 16);
+    const spread = Math.max(r, g, b) - Math.min(r, g, b);
+    if (spread > 40) return color; // kolorowe zostaje kolorowe
+    const inverted = 255 - Math.round((r + g + b) / 3);
+    const hex = Math.max(0, Math.min(255, inverted)).toString(16).padStart(2, '0');
+    return '#' + hex + hex + hex;
   }
 
   // ==========================================================================
@@ -473,7 +607,7 @@
   function createEmptyState() {
     return {
       version: FILE_FORMAT_VERSION,
-      meta: { title: '' },
+      meta: { title: '', grid: { ...DEFAULT_GRID } },
       strokes: [],
       images: [],
       annotations: [],
@@ -530,7 +664,12 @@
     };
   }
 
-  const MIGRATIONS = { 1: migrateV1ToV2, 2: migrateV2ToV3 };
+  /** v3 → v4: ustawienia kratki wjeżdżają do meta. */
+  function migrateV3ToV4(raw) {
+    return { ...raw, version: 4, meta: { ...(isPlainObject(raw.meta) ? raw.meta : {}), grid: DEFAULT_GRID } };
+  }
+
+  const MIGRATIONS = { 1: migrateV1ToV2, 2: migrateV2ToV3, 3: migrateV3ToV4 };
 
   /**
    * Doprowadza surowy JSON z pliku (albo z sesji) do bieżącego formatu.
@@ -674,6 +813,7 @@
       meta.clear();
 
       meta.set('title', state.meta.title);
+      meta.set('grid', { ...state.meta.grid });
       strokes.push(state.strokes.map((stroke) => strokeToYMap(Y, stroke)));
       images.push(state.images.map((image) => imageToYMap(Y, image)));
       annotations.push(state.annotations.map((annotation) => annotationToYMap(Y, annotation)));
@@ -699,6 +839,25 @@
     MAX_WORLD_X,
     MIN_WORLD_Y,
     MAX_WORLD_Y,
+
+    // kratka i motyw
+    GRID_BASE,
+    GRID_DIVISIONS,
+    GRID_MIN_SCREEN,
+    DEFAULT_GRID,
+    THEMES,
+    gridStep,
+    themeInk,
+    validateGrid,
+
+    // zaznaczenie
+    applyTransform,
+    transformBounds,
+    transformStroke,
+    transformImage,
+    unionBounds,
+    boundsInside,
+    fitImageIntoPage,
 
     // enumy i limity
     TOOLS,

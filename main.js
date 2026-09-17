@@ -24,6 +24,7 @@ let currentPath = null;
 let unsaved = false;
 let forceClose = false;
 let annotationLinesVisible = true;
+let lightTheme = false;
 // Plik z „Ostatnich” może przyjść, zanim renderer zdąży się zgłosić.
 let pendingOpen = null;
 let rendererReady = false;
@@ -407,7 +408,17 @@ async function buildMenu() {
   template.push({
     label: 'Widok',
     submenu: [
-      item('Lista adnotacji', 'view:annotation-list'),
+      {
+        label: 'Tryb biały',
+        type: 'checkbox',
+        checked: lightTheme,
+        click: (menuItem) => {
+          lightTheme = menuItem.checked;
+          send('view:theme', menuItem.checked ? 'light' : 'dark');
+        },
+      },
+      item('Kratka w tle…', 'view:grid'),
+      { type: 'separator' },
       {
         label: 'Pokaż linie adnotacji',
         type: 'checkbox',
