@@ -124,8 +124,28 @@ oraz jego `.zip`:
 W każdym folderze leży `CZYTAJ TO.txt` z instrukcją uruchomienia. Paczki
 Windows buduje się z macOS bez wine — cel `dir` nie potrzebuje NSIS-a.
 
-Do `.asar` wchodzi tylko to, co aplikacja realnie ładuje (`files` w sekcji
-`build`): testy, skrypty buildów i dokumentacja zostają w repo.
+Lista `files` w sekcji `build` działa **przez odejmowanie**: bierze wszystko
+i wyrzuca testy, skrypty buildów, dokumentację i katalog `dist`. Wcześniej
+wyliczała pliki do wzięcia — i `renderer.js` z korzenia wypadł z paczki, bo
+wpis obejmował tylko katalog `renderer/`. Aplikacja uruchamiała się wtedy
+normalnie, wyglądała normalnie i **nie reagowała na nic**, bo cała warstwa
+okablowania nie istniała. Przy odejmowaniu najgorsze, co się stanie, to
+odrobinę większa paczka.
+
+Dodatkowo `scripts/arrange-dist.js` przerywa build, jeśli w `app.asar` brakuje
+choćby jednego pliku, do którego odwołuje się `index.html`.
+
+### Sprawdzanie paczki
+
+```bash
+npm run smoke -- dist/MathNotes-1.1.0-mac-arm64/MathNotes.app
+npm run smoke -- .        # wersja ze źródeł, ta sama co `npm start`
+```
+
+Uruchomienie procesu nie dowodzi niczego: paczka bez jednego skryptu wstaje bez
+błędu i wygląda poprawnie. `scripts/smoke-package.js` podłącza się do aplikacji
+protokołem DevTools, sprawdza, że renderer się wykonał i wpiął wszystkie moduły,
+po czym **rysuje kreskę** i sprawdza, że dokument faktycznie się zmienił.
 
 **Paczki nie są podpisane.** Bez certyfikatu Apple Developer ID macOS pokaże
 ostrzeżenie przy pierwszym uruchomieniu (prawy klik → Otwórz), a Windows

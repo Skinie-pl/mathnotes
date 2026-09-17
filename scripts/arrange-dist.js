@@ -53,6 +53,57 @@ function rmrf(target) {
   fs.rmSync(target, { recursive: true, force: true });
 }
 
+/** Lista plików w archiwum asar, czytana z jego nagłówka (zwykły JSON na początku). */
+function asarFiles(asarPath) {
+  const fd = fs.openSync(asarPath, 'r');
+  try {
+    const head = Buffer.alloc(16);
+    fs.readSync(fd, head, 0, 16, 0);
+    const jsonSize = head.readUInt32LE(12);
+    const json = Buffer.alloc(jsonSize);
+    fs.readSync(fd, json, 0, jsonSize, 16);
+
+    const out = [];
+    const walk = (node, prefix) => {
+      for (const [name, value] of Object.entries(node.files || {})) {
+        if (value.files) walk(value, prefix + name + '/');
+        else out.push(prefix + name);
+      }
+    };
+    walk(JSON.parse(json.toString('utf8')), '');
+    return out;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Sprawdza, że w paczce jest wszystko, co ładuje index.html. Pominięcie choćby
+ * jednego skryptu daje aplikację, która wygląda normalnie i nie robi zupełnie
+ * nic — właśnie tak wypadł kiedyś renderer.js. Lepiej wywalić build.
+ */
+function verifyPackage(appDir, label) {
+  const asarPath = path.join(appDir, 'app.asar');
+  if (!fs.existsSync(asarPath)) throw new Error(label + ': brak app.asar w ' + appDir);
+
+  const inside = new Set(asarFiles(asarPath));
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const referenced = [...html.matchAll(/(?:src|href)="([^"]+)"/g)]
+    .map((m) => m[1])
+    .filter((ref) => !/^(https?:)?\/\//.test(ref));
+
+  const missing = referenced.filter((ref) => !inside.has(ref));
+  // main.js i preload.js nie są w index.html, a bez nich nie ma aplikacji.
+  for (const required of ['main.js', 'preload.js', 'notebook-file.js']) {
+    if (!inside.has(required)) missing.push(required);
+  }
+
+  if (missing.length > 0) {
+    throw new Error(label + ': w paczce brakuje plików: ' + missing.join(', '));
+  }
+  return referenced.length + 3;
+}
+
 function zipFolder(folder) {
   const archive = folder + '.zip';
   rmrf(archive);
@@ -82,13 +133,20 @@ for (const item of LAYOUT) {
   const from = path.join(DIST, item.from);
   if (!fs.existsSync(from)) continue;
 
+  // Zanim cokolwiek przełożymy — sprawdzamy, czy paczka w ogóle jest kompletna.
+  const resources =
+    item.from.startsWith('mac')
+      ? path.join(from, 'MathNotes.app', 'Contents', 'Resources')
+      : path.join(from, 'resources');
+  const checked = verifyPackage(resources, item.to);
+
   const to = path.join(DIST, item.to);
   rmrf(to);
   fs.renameSync(from, to);
   fs.writeFileSync(path.join(to, 'CZYTAJ TO.txt'), item.readme, 'utf8');
 
   const archive = zipFolder(to);
-  made.push({ folder: item.to, folderSize: size(to), archiveSize: size(archive) });
+  made.push({ folder: item.to, folderSize: size(to), archiveSize: size(archive), checked });
 }
 
 // Pozostałości pośrednie electron-buildera — nie mają czego szukać obok paczek.
@@ -101,6 +159,9 @@ if (made.length === 0) {
 } else {
   console.log('Gotowe paczki w dist/:');
   for (const item of made) {
-    console.log('  ' + item.folder + '  (folder ' + item.folderSize + ', zip ' + item.archiveSize + ')');
+    console.log(
+      '  ' + item.folder + '  (folder ' + item.folderSize + ', zip ' + item.archiveSize +
+        ', sprawdzono ' + item.checked + ' plików)',
+    );
   }
 }
