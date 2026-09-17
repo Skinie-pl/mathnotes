@@ -327,7 +327,11 @@ Podział jest jednoznaczny wyłącznie dlatego, że obie połowy mają stałą d
 | Kursory | ~20 Hz | Z domknięciem ostatniej pozycji, żeby cudzy kursor nie zamarzał w locie. |
 | Rozmiar dokumentu | 200 MB | Po przekroczeniu sesja przerywa się z komunikatem. |
 
-Nick i kolor ustawia się **przed dołączeniem**, w panelu dołączania (i w panelu
+Panel sesji otwiera kropka na dole paska narzędzi i robi obie rzeczy: wkleja się
+w nim kod od kogoś („Dołącz") albo rozpoczyna własną sesję („Rozpocznij nową").
+To samo jest w menu Online.
+
+Nick i kolor ustawia się **przed dołączeniem**, w tym samym panelu (oraz w panelu
 sesji, gdy to ty ją prowadzisz). Podgląd pokazuje dokładnie to, co zobaczą inni.
 Etykieta z nickiem wyświetla się nieco w prawo i w dół od cudzego kursora, żeby
 nie zasłaniała miejsca, w którym ktoś właśnie rysuje. Nick przechodzi przez tę

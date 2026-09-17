@@ -1383,6 +1383,30 @@
     return !overlay.classList.contains('modal-hidden');
   }
 
+  function anyModalOpen() {
+    for (const overlay of document.querySelectorAll('[id$="-overlay"]')) {
+      if (isOpen(overlay)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Kliknięcie w tło panelu przenosiło fokus na <body>, a wtedy wszystko, co
+   * wpisywałeś, szło w skróty narzędzi zamiast do pola. Klik gdziekolwiek
+   * w panelu wraca do jego głównego pola.
+   */
+  function focusFieldOnBoxClick(boxId, inputId) {
+    const box = $(boxId);
+    if (!box) return;
+    box.addEventListener('pointerdown', (event) => {
+      if (event.target.closest('input, textarea, button, label, a')) return;
+      setTimeout(() => $(inputId).focus(), 0);
+    });
+  }
+
+  focusFieldOnBoxClick('online-join-box', 'online-join-input');
+  focusFieldOnBoxClick('modal-box', 'modal-input');
+
   for (const [overlayId, closeId] of [
     ['annotation-list-overlay', 'annotation-list-close'],
     ['online-join-overlay', 'online-join-cancel'],
@@ -1935,6 +1959,9 @@
 
     const tag = document.activeElement && document.activeElement.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    // Przy otwartym panelu skróty narzędzi nie mają prawa działać — inaczej
+    // litery z wpisywanego kodu przełączają narzędzia pod spodem.
+    if (anyModalOpen()) return;
 
     const mod = event.ctrlKey || event.metaKey;
     const key = event.key;
@@ -2479,6 +2506,8 @@
   $('online-share-end').addEventListener('click', stopSession);
   $('online-share-settings').addEventListener('click', openOnlineSettings);
   $('online-join-ok').addEventListener('click', submitJoin);
+  // Bez tego sesję dało się rozpocząć wyłącznie z natywnego menu.
+  $('online-join-start').addEventListener('click', () => startSession(null, { fresh: false }));
   joinInput.addEventListener('keydown', (event) => {
     event.stopPropagation();
     if (event.key === 'Enter') {
