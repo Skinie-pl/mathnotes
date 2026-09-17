@@ -113,6 +113,19 @@
     return (dirty ? '• ' : '') + label + ' — ' + APP_NAME;
   }
 
+  // Alfabet base64url — pasuje do ID_RE, więc identyfikator nigdy nie wymaga
+  // uciekania i nie da się nim wyjść poza swoje miejsce.
+  const ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-';
+
+  /** 96 bitów z CSPRNG. Nigdy Math.random — id zderzają się w sesji online. */
+  function createId() {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    let out = '';
+    for (const byte of bytes) out += ID_ALPHABET[byte & 63];
+    return out;
+  }
+
   // ==========================================================================
   // Szerokość kreski — wspólna dla obu ścieżek renderowania
   // ==========================================================================
@@ -470,6 +483,92 @@
     return { state, skipped };
   }
 
+  // ==========================================================================
+  // Konwersja JSON ↔ Y.Doc
+  // ==========================================================================
+  //
+  // Y trafia tu argumentem, a nie przez import: core.js ma zostać modułem bez
+  // zależności, ładowalnym zarówno przez <script>, jak i przez require() w teście.
+
+  const STROKES_KEY = 'strokes';
+  const IMAGES_KEY = 'images';
+  const META_KEY = 'meta';
+
+  function strokeToYMap(Y, stroke) {
+    const map = new Y.Map();
+    map.set('id', stroke.id);
+    map.set('tool', stroke.tool);
+    map.set('brush', stroke.brush);
+    map.set('color', stroke.color);
+    map.set('size', stroke.size);
+    map.set('pts', Y.Array.from(stroke.pts));
+    return map;
+  }
+
+  function imageToYMap(Y, image) {
+    const map = new Y.Map();
+    map.set('id', image.id);
+    map.set('x', image.x);
+    map.set('y', image.y);
+    map.set('w', image.w);
+    map.set('h', image.h);
+    map.set('dataUrl', image.dataUrl);
+    return map;
+  }
+
+  /**
+   * Y.Doc → stan do zapisania w pliku. Zawartość dokumentu mogła przyjść od
+   * innych osób, więc każdy element przechodzi walidację; niepoprawne odpadają.
+   * @returns {{state: object, skipped: {strokes: number, images: number}}}
+   */
+  function ydocToState(doc) {
+    const state = createEmptyState();
+    const skipped = { strokes: 0, images: 0 };
+
+    state.meta = validateMeta(doc.getMap(META_KEY).toJSON());
+
+    for (const item of doc.getArray(STROKES_KEY)) {
+      if (state.strokes.length >= MAX_STROKES) {
+        skipped.strokes += 1;
+        continue;
+      }
+      const stroke = validateStroke(item && typeof item.toJSON === 'function' ? item.toJSON() : item);
+      if (stroke) state.strokes.push(stroke);
+      else skipped.strokes += 1;
+    }
+
+    for (const item of doc.getArray(IMAGES_KEY)) {
+      if (state.images.length >= MAX_IMAGES) {
+        skipped.images += 1;
+        continue;
+      }
+      const image = validateImage(item && typeof item.toJSON === 'function' ? item.toJSON() : item);
+      if (image) state.images.push(image);
+      else skipped.images += 1;
+    }
+
+    return { state, skipped };
+  }
+
+  /** Stan z pliku → Y.Doc. Podmienia całą zawartość, nie dokleja. */
+  function stateToYDoc(Y, doc, state, origin) {
+    doc.transact(() => {
+      const strokes = doc.getArray(STROKES_KEY);
+      const images = doc.getArray(IMAGES_KEY);
+      const meta = doc.getMap(META_KEY);
+
+      strokes.delete(0, strokes.length);
+      images.delete(0, images.length);
+      meta.clear();
+
+      meta.set('title', state.meta.title);
+      meta.set('background', state.meta.background);
+      strokes.push(state.strokes.map((stroke) => strokeToYMap(Y, stroke)));
+      images.push(state.images.map((image) => imageToYMap(Y, image)));
+    }, origin);
+    return doc;
+  }
+
   return {
     // meta
     APP_NAME,
@@ -520,7 +619,17 @@
     distanceToSegmentSquared,
     eraseStroke,
 
+    // konwersja Y.Doc
+    STROKES_KEY,
+    IMAGES_KEY,
+    META_KEY,
+    strokeToYMap,
+    imageToYMap,
+    ydocToState,
+    stateToYDoc,
+
     // format
+    createId,
     createEmptyState,
     validateStroke,
     validateImage,

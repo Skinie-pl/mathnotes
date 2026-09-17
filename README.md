@@ -35,7 +35,7 @@ Bez bundlera i bez transpilacji w runtime — zwykłe pliki `.js` ładowane prze
 | `notebook-file.js` | Atomowy zapis: `.tmp` + fsync → kopia do `.bak` → `rename`. |
 | `preload.js` | Jedyny most renderer↔Node (`window.api`, jawnie nazwane metody). |
 | `renderer/core.js` | Logika bez DOM: format pliku, walidacja, geometria, `widthFactor`. Testowana w `test/`. |
-| `renderer/doc.js` | Model dokumentu na Yjs, `Y.UndoManager`. |
+| `renderer/doc.js` | Model dokumentu na Yjs, `Y.UndoManager`, jedyne miejsce mutujące Y.Doc. |
 | `renderer/online.js` | Provider y-webrtc, awareness, obsługa pokoju. |
 | `renderer.js` | Wyłącznie okablowanie DOM/canvas. |
 | `index.html` | Nagłówek CSP, ciemna skóra UI. |
@@ -119,6 +119,31 @@ Obok pliku żyją dwie ścieżki pomocnicze:
 - `<plik>.bak` — dokładnie jedna wersja wstecz, nie historia. Odzyskanie jest
   ręczne: zmiana nazwy na `.json`.
 
+## Dokument i cofanie
+
+Dokument to CRDT (Yjs). `renderer/doc.js` jest jedynym miejscem, które mutuje
+Y.Doc; konwersja JSON↔Y.Doc siedzi w `core.js` i dostaje `Y` argumentem, żeby
+core pozostał modułem bez zależności.
+
+```
+doc.getArray('strokes')  → Y.Map { id, tool, color, size, brush, pts: Y.Array }
+doc.getArray('images')   → Y.Map { id, x, y, w, h, dataUrl }
+doc.getMap('meta')       → { title, background }
+```
+
+**Cofanie robi `Y.UndoManager`, nie migawki stanu.** `trackedOrigins` to
+wyłącznie lokalny origin instancji, więc undo zdejmuje tylko twoje zmiany —
+migawka cofnęłaby w sesji online także to, co narysował ktoś inny. Przy okazji
+znika problem pamięci przy obrazach. Test `undo cofa TYLKO moje zmiany`
+utrwala to na dwóch połączonych dokumentach.
+
+Granice kroków cofania domykamy jawnie przez `stopCapturing()` przy puszczeniu
+pióra, zamiast polegać na samym `captureTimeout` — dzięki temu jedno
+pociągnięcie to dokładnie jedno undo, także gdy ktoś rysuje bardzo wolno.
+
+Wczytanie pliku leci osobnym originem i czyści historię: otwarcie notatnika nie
+jest zmianą, którą da się cofnąć w pustkę.
+
 ## Strojenie pióra
 
 Sprzęt nigdy nie odpowiada modelowi: tablety mapują nacisk różnie, a część
@@ -159,7 +184,7 @@ Realizacja idzie etapami z sekcji 8 instrukcji. Po każdym etapie `npm test`.
 - [x] 2. `notebook-file.js` — atomowy zapis, `.bak`, testy.
 - [x] 3. `core.js` — format v2, migracja z v1, walidatory, geometria, `widthFactor`.
 - [x] 4. `npm run vendor` i bundle Collab.
-- [ ] 5. `doc.js` — schemat Yjs, UndoManager, eksport/import JSON.
+- [x] 5. `doc.js` — schemat Yjs, UndoManager, eksport/import JSON.
 - [ ] 6. `renderer.js` — pointer events, dwie ścieżki renderowania, kafle, narzędzia, UI.
       Tu też wchodzi potwierdzenie zamknięcia okna z niezapisanym, nienazwanym
       notatnikiem — wcześniej nie ma stanu „są niezapisane zmiany”, którego
