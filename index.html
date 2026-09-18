@@ -61,6 +61,10 @@
     <canvas id="canvas"></canvas>
     <!-- Kursory innych osób. Nazwy wstawiane wyłącznie przez textContent. -->
     <div id="peers"></div>
+    <!-- Kto jest w sesji. Kliknięcie przenosi do tej osoby. -->
+    <div id="people-overlay" class="hidden"></div>
+    <!-- Która strona wczytanego PDF-a jest na ekranie. -->
+    <div id="page-indicator" class="hidden"></div>
   </div>
 
   <div id="brush-flyout" class="flyout hidden">
@@ -135,7 +139,6 @@
         <input id="online-share-code" type="text" readonly />
         <button id="online-share-copy">Kopiuj</button>
       </div>
-      <div id="session-people"></div>
       <div class="identity-block" id="share-identity"></div>
       <div id="online-share-hint">Podaj ten kod drugiej osobie — wybiera „Dołącz do sesji” i go wkleja. Maks. 10 osób naraz. Kod nie jest nigdzie zapisywany i znika razem z sesją.</div>
       <div class="modal-actions">

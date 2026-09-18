@@ -13,12 +13,19 @@
   // Każda zmiana kształtu zapisywanego stanu = bump wersji + krok w normalizeState.
   const FILE_FORMAT_VERSION = 5;
 
-  // Kartka, nie płótno: stała szerokość, przewijanie w dół bez końca.
-  // Szersza niż w poprzedniej wersji — przy 900 px rysunek szybko dobijał
-  // do krawędzi i nie było się gdzie cofnąć.
-  const PAGE_WIDTH = 1600;
-  // Odrobina luzu, żeby krawędź nie sprawiała wrażenia ściany.
-  const PAGE_PAN_MARGIN = 60;
+  // Kartka, nie płótno: stała szerokość, przewijanie w dół.
+  // Szerokość pola roboczego. Maksymalne oddalenie pokazuje dokładnie tyle —
+  // ani piksela pustki obok — więc wszystko, co widać, da się zapisać.
+  const PAGE_WIDTH = 2400;
+  // Strona wczytanego PDF-a jest węższa niż pole robocze i wyśrodkowana.
+  // Paski po bokach to margines na notatki i pisze się po nich normalnie.
+  const PDF_PAGE_WIDTH = 1600;
+  // Zero luzu: każdy pas, który widać, ma być do pisania. Inaczej pióro
+  // przyciśnięte poza kartką dociskało punkt do krawędzi i kreska „teleportowała się".
+  const PAGE_PAN_MARGIN = 0;
+  // O ile kartka wyprzedza notatki. Nie jest nieskończona od początku —
+  // wydłuża się sama, gdy schodzisz coraz niżej.
+  const PAGE_GROW_AHEAD = 1600;
   // Pion jest „nieskończony”, ale nie nieograniczony — walidacja musi mieć
   // czego się trzymać, a kafle muszą się kiedyś kończyć.
   const MAX_PAGE_HEIGHT = 2000000;
@@ -478,6 +485,15 @@
   // Walidacja — fail closed
   // ==========================================================================
 
+  /**
+   * Czy w tym miejscu w ogóle może powstać atrament. Renderer pyta o to PRZED
+   * rozpoczęciem kreski: dociskanie punktu do krawędzi dawało kreskę, która
+   * pojawiała się gdzie indziej niż pióro — wyglądało to jak teleportacja.
+   */
+  function pointInPage(x, y) {
+    return validPoint(x, y);
+  }
+
   function validPoint(x, y) {
     return (
       isFiniteNumber(x) &&
@@ -551,12 +567,12 @@
       if (!isFiniteNumber(size.width) || !isFiniteNumber(size.height)) return null;
       if (size.width <= 0 || size.height <= 0) return null;
 
-      const h = roundCoord(PAGE_WIDTH * (size.height / size.width));
+      const h = roundCoord(PDF_PAGE_WIDTH * (size.height / size.width));
       if (h <= 0) return null;
       // Świat kończy się w pionie; dalszych stron po prostu nie ma gdzie położyć.
       if (y + h > MAX_WORLD_Y) break;
 
-      out.push({ x: 0, y: roundCoord(y), w: PAGE_WIDTH, h });
+      out.push({ x: roundCoord((PAGE_WIDTH - PDF_PAGE_WIDTH) / 2), y: roundCoord(y), w: PDF_PAGE_WIDTH, h });
       y += h + PDF_PAGE_GAP;
     }
     return out.length > 0 ? out : null;
@@ -892,6 +908,8 @@
 
     // strona i świat
     PAGE_WIDTH,
+    PDF_PAGE_WIDTH,
+    PAGE_GROW_AHEAD,
     PAGE_PAN_MARGIN,
     MAX_PAGE_HEIGHT,
     TILE_HEIGHT,
@@ -919,6 +937,7 @@
     boundsInside,
     fitImageIntoPage,
     layoutPdfPages,
+    pointInPage,
 
     // enumy i limity
     TOOLS,

@@ -149,7 +149,8 @@
       if (mode !== 'area') {
         for (let i = 0; i < this.images.length; i++) {
           const image = core.validateImage(this.images.get(i).toJSON());
-          if (image && core.eraseHitsImage(image, x, y, radius)) imageHits.push(i);
+          // Tła z PDF-a gumka nie rusza — tak samo jak nie da się go zaznaczyć.
+          if (image && !image.locked && core.eraseHitsImage(image, x, y, radius)) imageHits.push(i);
         }
       }
 

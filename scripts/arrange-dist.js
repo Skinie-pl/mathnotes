@@ -36,18 +36,12 @@ const LAYOUT = [
       'uruchomieniu system może ją zablokować. Wtedy: prawy klik na MathNotes.app\n' +
       '→ Otwórz → Otwórz. Wystarczy raz.\n',
   },
-  {
-    from: 'win-unpacked',
-    to: 'MathNotes-' + version + '-win-x64',
-    readme:
-      'MathNotes ' + version + ' — Windows 64-bit, wersja przenośna\n\n' +
-      'Uruchomienie: MathNotes.exe. Nie ma instalatora — cały folder jest\n' +
-      'aplikacją, można go skopiować gdziekolwiek, także na pendrive.\n\n' +
-      'Aplikacja nie jest podpisana, więc SmartScreen może pokazać ostrzeżenie.\n' +
-      'Wtedy: Więcej informacji → Uruchom mimo to.\n\n' +
-      'Notatniki zapisują się domyślnie w Dokumenty\\MathNotes.\n',
-  },
-];
+]
+
+// Windows dostaje jeden przenośny plik .exe zamiast folderu. electron-builder
+// i tak buduje po drodze `win-unpacked`, więc sprawdzamy kompletność tam,
+// a zostawiamy tylko gotowy exe.
+const WIN_EXE = 'MathNotes-' + version + '-win-x64.exe';
 
 function rmrf(target) {
   fs.rmSync(target, { recursive: true, force: true });
@@ -152,8 +146,23 @@ for (const item of LAYOUT) {
   made.push({ folder: item.to, folderSize: size(to), archiveSize: size(archive), checked });
 }
 
+// --- Windows: jeden przenośny exe ------------------------------------------
+const winUnpacked = path.join(DIST, 'win-unpacked');
+const winExe = path.join(DIST, WIN_EXE);
+if (fs.existsSync(winExe)) {
+  if (fs.existsSync(winUnpacked)) {
+    // Ta sama kontrola co dla macOS: paczka bez jednego skryptu uruchamia się
+    // i nie robi nic, więc lepiej wywalić build niż wydać taki plik.
+    const checked = verifyPackage(path.join(winUnpacked, 'resources'), WIN_EXE);
+    rmrf(winUnpacked);
+    made.push({ folder: WIN_EXE, folderSize: size(winExe), archiveSize: '—', checked });
+  } else {
+    made.push({ folder: WIN_EXE, folderSize: size(winExe), archiveSize: '—', checked: 0 });
+  }
+}
+
 // Pozostałości pośrednie electron-buildera — nie mają czego szukać obok paczek.
-for (const junk of ['builder-debug.yml', '.icon-icns', '.icon-ico', '.icon-set']) {
+for (const junk of ['builder-debug.yml', '.icon-icns', '.icon-ico', '.icon-set', 'win-unpacked']) {
   rmrf(path.join(DIST, junk));
 }
 
@@ -163,7 +172,8 @@ if (made.length === 0) {
   console.log('Gotowe paczki w dist/:');
   for (const item of made) {
     console.log(
-      '  ' + item.folder + '  (folder ' + item.folderSize + ', zip ' + item.archiveSize +
+      '  ' + item.folder + '  (' + item.folderSize +
+        (item.archiveSize === '—' ? '' : ', zip ' + item.archiveSize) +
         ', sprawdzono ' + item.checked + ' plików)',
     );
   }

@@ -904,35 +904,7 @@ body {
   background: var(--btn-hover);
 }
 
-/* --- lista osób w sesji --- */
-
-#session-people {
-  margin-bottom: 4px;
-}
-
-#session-people:empty {
-  display: none;
-}
-
-.people-heading {
-  font-size: 11px;
-  color: var(--dim);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-bottom: 6px;
-}
-
-.person {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  margin-bottom: 4px;
-  background: var(--item);
-  border: 1px solid var(--item-border);
-  border-radius: 7px;
-  font-size: 13px;
-}
+/* --- lista osób w sesji (nakładka w rogu pola roboczego) --- */
 
 .person-dot {
   width: 10px;
@@ -954,4 +926,56 @@ body {
 .person-self {
   font-size: 11px;
   color: var(--faint);
+}
+
+/* --- Kto jest w sesji (lewy górny róg pola roboczego) ----------------------
+   Nakładka nad canvasem, nie element układu: pole robocze ma zostać całe do
+   pisania, a lista ma znikać razem z sesją. */
+#people-overlay {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--item-border);
+  font-size: 12px;
+  max-width: 220px;
+}
+
+#people-overlay .person {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 5px;
+  background: none;
+  border: 0;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+}
+
+#people-overlay .person:hover:not(:disabled) { background: var(--btn-hover); }
+#people-overlay .person:disabled { cursor: default; opacity: 0.75; }
+
+#page-indicator {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 5;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--item-border);
+  color: var(--dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }

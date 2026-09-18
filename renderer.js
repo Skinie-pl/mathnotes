@@ -14,7 +14,9 @@
   // 100 % = cała szerokość obszaru rysowania widoczna. Poniżej stu procent
   // po bokach widać margines, ale w pionie mieści się dużo więcej notatek —
   // i o to chodzi przy przeglądaniu długiego notatnika.
-  const MIN_ZOOM = 0.25;
+  // 100 % to szerokość pola roboczego dopasowana do okna i zarazem maksymalne
+  // oddalenie: dalej byłaby już tylko pustka, po której nie da się pisać.
+  const MIN_ZOOM = 1;
   const MAX_ZOOM = 8;
   // Powyżej tej skali cache'u rysujemy kreski wprost zamiast z kafli.
   const MAX_CACHE_SCALE = 2;
@@ -112,20 +114,41 @@
 
   function clampViewX(x, scale) {
     const viewportWorldWidth = viewW / scale;
-    // Po oddaleniu kartka jest węższa niż okno — wtedy zamiast dociskać ją
-    // do lewej krawędzi, stawiamy ją na środku.
-    if (viewportWorldWidth > core.PAGE_WIDTH + core.PAGE_PAN_MARGIN * 2) {
-      return (core.PAGE_WIDTH - viewportWorldWidth) / 2;
-    }
-    const minX = -core.PAGE_PAN_MARGIN;
-    const maxX = Math.max(minX, core.PAGE_WIDTH - viewportWorldWidth + core.PAGE_PAN_MARGIN);
-    return core.clamp(x, minX, maxX);
+    // Przy maksymalnym oddaleniu okno pokazuje dokładnie pole robocze, więc
+    // nigdy nie widać pasa, po którym nie dałoby się pisać.
+    const maxX = Math.max(0, core.PAGE_WIDTH - viewportWorldWidth);
+    return core.clamp(x, 0, maxX);
   }
 
   // Notatnik ciągnie się w dół bez końca, ale nad górną krawędzią kartki
   // nie ma czego szukać.
+  // Dół treści liczymy raz na zmianę dokumentu — clampViewY wołane jest przy
+  // każdym obrocie kółka, a przeglądanie wszystkich kresek za każdym razem
+  // byłoby zauważalne przy dużej notatce.
+  let documentBottomCache = null;
+
+  function documentBottom() {
+    if (documentBottomCache !== null) return documentBottomCache;
+    let bottom = 0;
+    for (const map of notebook.strokes) {
+      const entry = entryFor(map);
+      if (entry) bottom = Math.max(bottom, entry.bounds.maxY);
+    }
+    eachImage((image) => {
+      bottom = Math.max(bottom, image.y + image.h);
+    });
+    documentBottomCache = bottom;
+    return bottom;
+  }
+
+  /**
+   * Kartka nie jest nieskończona od pierwszej chwili — wyprzedza notatki
+   * o `PAGE_GROW_AHEAD` i wydłuża się sama, w miarę jak schodzisz niżej.
+   * Dzięki temu suwak i zasięg przewijania odpowiadają temu, co naprawdę jest.
+   */
   function clampViewY(y) {
-    return core.clamp(y, -core.PAGE_PAN_MARGIN, core.MAX_WORLD_Y);
+    const limit = Math.min(documentBottom() + core.PAGE_GROW_AHEAD, core.MAX_WORLD_Y);
+    return core.clamp(y, 0, Math.max(0, limit));
   }
 
   function screenToWorld(sx, sy) {
@@ -706,6 +729,7 @@
     drawMarquee(ctx);
 
     renderPeers();
+    updatePageIndicator();
   }
 
   /** Dorysowanie na wierzchu, bez czyszczenia — ścieżka o najniższym opóźnieniu. */
@@ -862,7 +886,10 @@
   }
 
   function beginStroke(event) {
-    const point = clampWorld(canvasPoint(event));
+    const point = canvasPoint(event);
+    // Poza polem roboczym atrament nie może powstać. Wcześniej punkt był tu
+    // dociskany do krawędzi, więc kreska pojawiała się gdzie indziej niż pióro.
+    if (!core.pointInPage(point.x, point.y)) return;
     activeStroke = {
       id: core.createId(),
       tool: 'pen',
@@ -1011,7 +1038,7 @@
   const DRAWING_BUTTONS = new Set([0, 5]);
 
   function defaultCursor() {
-    if (tool === 'pen') return PEN_CURSOR;
+    if (tool === 'pen') return penCursorFor(currentWidth, view.scale);
     if (tool === 'eraser') return eraserCursorFor(currentWidth);
     return 'default';
   }
@@ -1316,19 +1343,6 @@
     return pdfLibPromise;
   }
 
-  /** Dół tego, co już jest w notatniku — nowe strony idą pod spód, nie na wierzch. */
-  function contentBottom() {
-    let bottom = 0;
-    for (const map of notebook.strokes) {
-      const entry = entryFor(map);
-      if (entry) bottom = Math.max(bottom, entry.bounds.maxY);
-    }
-    eachImage((image) => {
-      bottom = Math.max(bottom, image.y + image.h);
-    });
-    return bottom > 0 ? bottom + core.PDF_PAGE_GAP : 0;
-  }
-
   /**
    * Jedna strona PDF-a na obraz. JPEG, bo strona to zdjęcie tekstu: PNG byłby
    * kilka razy cięższy bez widocznej różnicy, a każda strona idzie do pliku
@@ -1374,7 +1388,9 @@
         sizes.push({ width: viewport.width, height: viewport.height });
       }
 
-      const layout = core.layoutPdfPages(sizes, contentBottom());
+      // Nowe strony lądują pod tym, co już jest — import niczego nie przykrywa.
+      const zajete = documentBottom();
+      const layout = core.layoutPdfPages(sizes, zajete > 0 ? zajete + core.PDF_PAGE_GAP : 0);
       if (!layout) {
         flashTitle('MathNotes — nie udało się ułożyć stron tego PDF-a', 3500);
         return;
@@ -1701,6 +1717,25 @@
     '<circle cx="7" cy="7" r="3.2" fill="white" stroke="black" stroke-width="1.2"/></svg>';
   const PEN_CURSOR = "url('data:image/svg+xml;utf8," + encodeURIComponent(PEN_CURSOR_SVG) + "') 7 7, crosshair";
 
+  /**
+   * Kursor pióra to okrąg dokładnie tak gruby, jak kreska, która za chwilę
+   * powstanie — a że grubość jest w jednostkach świata, zależy też od
+   * powiększenia. Stała kropka kłamała: przy grubości 30 i przybliżeniu 400 %
+   * ślad był kilkanaście razy szerszy od kursora.
+   */
+  function penCursorFor(width, scale) {
+    const diameter = core.clamp(width * scale, 4, 96);
+    const size = Math.ceil(diameter + 4);
+    const c = size / 2;
+    const r = diameter / 2;
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '">' +
+      '<circle cx="' + c + '" cy="' + c + '" r="' + r + '" fill="rgba(255,255,255,0.2)" stroke="white" stroke-width="1.2"/>' +
+      '<circle cx="' + c + '" cy="' + c + '" r="' + r + '" fill="none" stroke="black" stroke-width="0.6"/>' +
+      '</svg>';
+    return "url('data:image/svg+xml;utf8," + encodeURIComponent(svg) + "') " + c + ' ' + c + ', crosshair';
+  }
+
   // Okrąg dokładnie w rozmiarze promienia kasowania — nigdy generyczny krzyżyk
   // dla akcji, która ma zasięg.
   function eraserCursorFor(width) {
@@ -1896,6 +1931,8 @@
   const zoomIndicator = $('zoom-indicator');
 
   function updateZoomIndicator() {
+    // Kursor pióra zależy od powiększenia, więc musi się przerysować razem z nim.
+    if (tool === 'pen') canvas.style.cursor = defaultCursor();
     zoomIndicator.textContent = Math.round(zoomLevel() * 100) + '%';
   }
 
@@ -2366,6 +2403,8 @@
     }
 
     if (needsFullInvalidate) tiles.clear();
+    documentBottomCache = null;
+    pdfPagesCache = null;
     pruneStrokeCache();
     if (selectionMaybeStale && selectionBox) recomputeSelectionBox();
     // Lista adnotacji to DOM — przebudowujemy ją tylko, gdy ktoś na nią patrzy.
@@ -2621,20 +2660,26 @@
   }
 
   /** Kto jest w sesji — ty plus wszyscy, których widzi awareness. */
+  /**
+   * Kto jest w sesji — nakładka w lewym górnym rogu pola roboczego, widoczna
+   * przez cały czas trwania sesji, a nie dopiero po otwarciu panelu.
+   * Kliknięcie w osobę przenosi widok do miejsca, w którym ona właśnie jest.
+   */
   function renderSessionPeople() {
-    const list = $('session-people');
-    if (!list) return;
-    list.replaceChildren();
-    if (!sessionActive()) return;
+    const overlay = $('people-overlay');
+    if (!overlay) return;
+    overlay.replaceChildren();
+
+    if (!sessionActive()) {
+      overlay.classList.add('hidden');
+      return;
+    }
+    overlay.classList.remove('hidden');
 
     const people = [{ name: identity.name, color: identity.color, self: true }, ...peers];
-    const heading = document.createElement('div');
-    heading.className = 'people-heading';
-    heading.textContent = 'W sesji: ' + people.length + (people.length === 1 ? ' osoba' : ' os.');
-    list.append(heading);
-
     for (const person of people) {
-      const row = document.createElement('div');
+      const row = document.createElement('button');
+      row.type = 'button';
       row.className = 'person';
 
       const dot = document.createElement('span');
@@ -2643,17 +2688,75 @@
 
       const name = document.createElement('span');
       name.className = 'person-name';
-      name.textContent = person.name; // nigdy innerHTML
+      name.textContent = person.name; // nigdy innerHTML — to tekst od obcej osoby
 
       row.append(dot, name);
+
       if (person.self) {
         const tag = document.createElement('span');
         tag.className = 'person-self';
         tag.textContent = 'to Ty';
         row.append(tag);
+        row.disabled = true;
+        row.title = 'To Ty';
+      } else if (person.cursor) {
+        row.title = 'Przenieś widok do tej osoby';
+        row.addEventListener('click', () => jumpToPeer(person));
+      } else {
+        row.disabled = true;
+        row.title = 'Ta osoba nie ma teraz kursora na kartce';
       }
-      list.append(row);
+
+      overlay.append(row);
     }
+  }
+
+  /** Przeniesienie widoku tam, gdzie jest kursor drugiej osoby. */
+  function jumpToPeer(person) {
+    if (!person.cursor) return;
+    view.x = clampViewX(person.cursor.x - viewW / view.scale / 2, view.scale);
+    view.y = clampViewY(person.cursor.y - viewH / view.scale / 2);
+    render();
+    flashTitle('MathNotes — przeniesiono do: ' + person.name, 1800);
+  }
+
+  // ==========================================================================
+  // Która strona wczytanego PDF-a jest na ekranie
+  // ==========================================================================
+
+  let pdfPagesCache = null;
+
+  function pdfPages() {
+    if (pdfPagesCache !== null) return pdfPagesCache;
+    const pages = [];
+    eachImage((image) => {
+      if (image.locked) pages.push({ y: image.y, h: image.h });
+    });
+    pages.sort((a, b) => a.y - b.y);
+    pdfPagesCache = pages;
+    return pages;
+  }
+
+  function updatePageIndicator() {
+    const element = $('page-indicator');
+    if (!element) return;
+    const pages = pdfPages();
+    if (pages.length === 0) {
+      element.classList.add('hidden');
+      return;
+    }
+
+    // Liczy się to, co jest na środku ekranu, a nie górna krawędź: przy
+    // przewijaniu numer zmienia się wtedy, kiedy naprawdę patrzysz na nową stronę.
+    const middle = view.y + viewH / view.scale / 2;
+    let index = 0;
+    for (let i = 0; i < pages.length; i++) {
+      if (middle >= pages[i].y) index = i;
+      else break;
+    }
+
+    element.classList.remove('hidden');
+    element.textContent = 'Strona ' + (index + 1) + ' z ' + pages.length;
   }
 
   function updateOnlineStatusUI() {
@@ -2968,6 +3071,9 @@
     },
     peers: () => peers.map((p) => p.name + '/' + p.color),
     zaznaczenie: () => selectedStrokes.size + ' kresek, ' + selectedImages.size + ' obrazow',
+    widok: () => ({ x: Math.round(view.x), y: Math.round(view.y), zoom: Math.round(zoomLevel() * 100) }),
+    dolDokumentu: () => Math.round(documentBottom()),
+    kursor: () => canvas.style.cursor.length,
     bitmapy: () => [...bitmaps.entries()].map(([id, b]) => id.slice(0,6) + '=' + (b ? 'ok' : 'null')).join(','),
   };
   window.api.ready();

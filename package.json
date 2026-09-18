@@ -65,7 +65,7 @@
       "icon": "build/icon.png",
       "target": [
         {
-          "target": "dir",
+          "target": "portable",
           "arch": [
             "x64"
           ]
@@ -82,6 +82,10 @@
           ]
         }
       ]
+    },
+    "portable": {
+      "artifactName": "MathNotes-${version}-win-x64.exe",
+      "unpackDirName": "MathNotes"
     }
   }
 }

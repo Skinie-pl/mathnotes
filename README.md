@@ -124,7 +124,7 @@ oraz jego `.zip`:
 | --- | --- |
 | `MathNotes-<wersja>-mac-arm64` | macOS na Apple Silicon (M1 i nowsze) |
 | `MathNotes-<wersja>-mac-x64` | macOS na Intelu |
-| `MathNotes-<wersja>-win-x64` | Windows 64-bit, wersja przenośna bez instalatora |
+| `MathNotes-<wersja>-win-x64.exe` | Windows 64-bit, jeden przenośny plik — nic nie instaluje. Przy pierwszym uruchomieniu rozpakowuje się do katalogu tymczasowego (stała nazwa `unpackDirName`, więc kolejne starty są już szybkie). |
 
 W każdym folderze leży `CZYTAJ TO.txt` z instrukcją uruchomienia. Paczki
 Windows buduje się z macOS bez wine — cel `dir` nie potrzebuje NSIS-a.
@@ -243,17 +243,30 @@ inny, a to twój egzemplarz zostanie zapisany.
 
 ## Rysowanie
 
-Kartka ma stałą szerokość `PAGE_WIDTH` (1600 px) i przewija się w dół bez końca.
-Widok trzyma współrzędne świata lewego górnego rogu plus powiększenie; w poziomie
-jest przycięty do kartki z marginesem `PAGE_PAN_MARGIN`, więc nie da się odpłynąć
-w bok.
+Pole robocze ma stałą szerokość `PAGE_WIDTH` (2400) i przewija się w dół.
 
-**100 % to szerokość kartki dopasowana do okna.** Oddalić można do 25 %, przybliżyć
-do 800 %. Poniżej 100 % kartka jest węższa niż okno i wtedy `clampViewX` stawia ją
-na środku zamiast dociskać do lewej krawędzi — inaczej oddalanie wyglądałoby jak
-ucieczka rysunku w bok. Wskaźnik procentów na dole toolbara resetuje powiększenie
-kliknięciem. Ponieważ 100 % zależy od szerokości okna, po zmianie rozmiaru trzymamy
-ten sam poziom procentowy, a nie tę samą skalę.
+**100 % to szerokość pola roboczego dopasowana do okna i zarazem maksymalne
+oddalenie.** Przybliżyć można do 800 %. Zasada jest taka: *wszystko, co widać, da
+się zapisać*. Dlatego `PAGE_PAN_MARGIN` wynosi zero i nie ma żadnego pasa obok
+kartki — wcześniej taki pas był, a pióro przyciśnięte na nim dostawało punkt
+dociśnięty do krawędzi, więc kreska powstawała gdzie indziej niż pióro. Wyglądało
+to jak teleportacja i było zgłaszane właśnie tak.
+
+Z tej samej zasady `beginStroke` **odmawia** rozpoczęcia kreski poza polem
+roboczym (`core.pointInPage`), zamiast dociskać punkt. W trakcie już rozpoczętej
+kreski punkty nadal są dociskane do krawędzi — tam to jest poprawne, bo linia ma
+się zatrzymać na brzegu, a nie przeskoczyć.
+
+### Jak daleko w dół
+
+Kartka **nie jest nieskończona od pierwszej chwili**. Zasięg przewijania to dół
+treści plus `PAGE_GROW_AHEAD`, czyli kartka wyprzedza notatki o kawałek i wydłuża
+się sama, w miarę jak schodzisz niżej. Pusty notatnik pozwala zejść o jeden
+„ekran w zapasie”, a nie o dwa miliony jednostek świata.
+
+Dół treści (`documentBottom`) jest cache'owany i unieważniany przy zmianie
+dokumentu: `clampViewY` wołane jest przy każdym obrocie kółka, a przeglądanie
+wszystkich kresek za każdym razem byłoby widać przy dużej notatce.
 
 ### Kratka w tle
 
@@ -273,6 +286,12 @@ Motyw zmienia tło kartki i skórę interfejsu. Atrament przechodzi przez
 `themeInk`: skrajne szarości są odwracane (biała kreska na białej kartce byłaby
 niewidoczna), a nasycone kolory zostają bez zmian, bo czytają się na obu tłach.
 Zmieniamy tylko sposób rysowania — kolory zapisane w pliku zostają nietknięte.
+
+Kursor pióra to okrąg dokładnie tak gruby, jak kreska, która powstanie —
+a że grubość jest w jednostkach świata, zależy też od powiększenia i przerysowuje
+się razem z nim. Stała kropka kłamała: przy grubości 30 i przybliżeniu 400 % ślad
+był kilkanaście razy szerszy od kursora. Kursor gumki działa tak samo, tyle że
+promień kasowania jest stały w pikselach ekranu, więc nie zależy od powiększenia.
 
 Gotowe kreski trzymane są w kafelkach po `TILE_HEIGHT` pikseli świata;
 przerysowywane są tylko kafle widoczne i zmienione, a kreski odrzucane po
@@ -315,22 +334,32 @@ Wejście:
 ## Wczytany PDF
 
 Plik upuszczony na okno albo wybrany przez Plik → „Wczytaj PDF jako tło…"
-zamienia się w **zablokowane obrazy tła**: każda strona rozciągnięta na pełną
-szerokość kartki, jedna pod drugą, z przerwą `PDF_PAGE_GAP`. Atrament leży na
-nich tak samo jak na kratce.
+zamienia się w **zablokowane obrazy tła**: strony jedna pod drugą, z przerwą
+`PDF_PAGE_GAP`. Atrament leży na nich tak samo jak na kratce.
+
+Strona PDF-a jest **węższa niż pole robocze** (`PDF_PAGE_WIDTH` 1600 przy
+`PAGE_WIDTH` 2400) i wyśrodkowana, więc po obu stronach zostaje pas na notatki
+na marginesie. Pasy są zwykłym polem roboczym — pisze się po nich normalnie.
 
 Dlaczego strony są zwykłymi obrazami, a nie osobnym bytem: dzięki temu od razu
 działa na nich wszystko, co już umie notatnik — zapis do pliku, kafle, migracje,
 cofanie i synchronizacja w sesji. Jedyne, co trzeba było dołożyć, to flaga
-`locked`, która wypina stronę z zaznaczania (`findImageAt` i `selectInBox`).
-Bez niej jedno pociągnięcie kursorem przesunęłoby tło pod całą notatką.
+`locked`, która wypina stronę z zaznaczania (`findImageAt`, `selectInBox`)
+**oraz z gumki** (`eraseAt` w `doc.js` — tryb „Obiekty” kasuje obrazy, więc bez
+tego jedno machnięcie gumką usuwało stronę tła). Bez tego jedno pociągnięcie
+kursorem przesunęłoby tło pod całą notatką.
+
+Numer oglądanej strony pokazuje się w prawym dolnym rogu. Liczy się to, co jest
+na środku ekranu, a nie górna krawędź — dzięki temu numer zmienia się wtedy,
+kiedy naprawdę patrzysz na nową stronę.
 
 Strony trafiają **pod** to, co już jest w notatniku (`contentBottom`), więc import
 nigdy niczego nie przykrywa, a `Ctrl+Z` cofa go w całości.
 
 | Parametr | Wartość | Dlaczego |
 | --- | --- | --- |
-| `PDF_RENDER_WIDTH` | 2400 px | Kartka ma 1600 jednostek, więc strona zostaje ostra mniej więcej do 150 % powiększenia. Wyżej rośnie już tylko waga pliku. |
+| `PDF_PAGE_WIDTH` | 1600 | Strona zajmuje 2/3 pola roboczego; reszta to margines na notatki. |
+| `PDF_RENDER_WIDTH` | 2400 px | Strona ma 1600 jednostek, więc zostaje ostra mniej więcej do 150 % powiększenia. Wyżej rośnie już tylko waga pliku. |
 | `MAX_PDF_PAGES` | 100 | Każda strona to osobny obraz w pliku notatnika. |
 | Format rastra | JPEG 0,85 | Strona to zdjęcie tekstu; PNG byłby kilka razy cięższy bez widocznej różnicy. Przy przekroczeniu 5 MB na obraz schodzimy do 0,65 i 0,45. |
 

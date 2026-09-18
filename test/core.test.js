@@ -546,7 +546,7 @@ test('wklejany obraz mieści się w kartce niezależnie od powiększenia', () =>
 
 // --- Strony wczytanego PDF-a -------------------------------------------------
 
-test('layoutPdfPages układa strony w pionie, każdą na pełną szerokość kartki', () => {
+test('layoutPdfPages układa strony w pionie, wyśrodkowane, z marginesem po bokach', () => {
   const layout = core.layoutPdfPages([
     { width: 595, height: 842 }, // A4 pionowo
     { width: 842, height: 595 }, // A4 poziomo
@@ -554,14 +554,26 @@ test('layoutPdfPages układa strony w pionie, każdą na pełną szerokość kar
 
   assert.equal(layout.length, 2);
   for (const box of layout) {
-    assert.equal(box.x, 0);
-    assert.equal(box.w, core.PAGE_WIDTH, 'strona zajmuje całą szerokość kartki');
+    assert.equal(box.w, core.PDF_PAGE_WIDTH, 'strona jest węższa niż pole robocze');
+    assert.ok(box.x > 0, 'z lewej zostaje margines na notatki');
+    assert.equal(
+      core.PAGE_WIDTH - (box.x + box.w),
+      box.x,
+      'margines z prawej jest taki sam jak z lewej — strona jest wyśrodkowana',
+    );
   }
   // Proporcje muszą zostać zachowane, inaczej tekst byłby rozciągnięty.
-  assert.ok(Math.abs(layout[0].h - core.PAGE_WIDTH * (842 / 595)) < 1);
-  assert.ok(Math.abs(layout[1].h - core.PAGE_WIDTH * (595 / 842)) < 1);
+  assert.ok(Math.abs(layout[0].h - core.PDF_PAGE_WIDTH * (842 / 595)) < 1);
+  assert.ok(Math.abs(layout[1].h - core.PDF_PAGE_WIDTH * (595 / 842)) < 1);
   assert.equal(layout[0].y, 0);
   assert.equal(layout[1].y, layout[0].h + core.PDF_PAGE_GAP, 'druga strona zaczyna się pod pierwszą');
+});
+
+test('margines obok strony PDF-a mieści się w polu roboczym, więc da się po nim pisać', () => {
+  const [strona] = core.layoutPdfPages([{ width: 595, height: 842 }]);
+  // Punkt w pasku po lewej stronie kartki PDF-a musi być legalnym miejscem na atrament.
+  assert.ok(core.pointInPage(strona.x / 2, 100), 'lewy margines jest do pisania');
+  assert.ok(core.pointInPage(strona.x + strona.w + strona.x / 2, 100), 'prawy margines też');
 });
 
 test('layoutPdfPages zaczyna od podanej wysokości, żeby nie przykryć notatek', () => {
