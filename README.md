@@ -423,7 +423,7 @@ Podział jest jednoznaczny wyłącznie dlatego, że obie połowy mają stałą d
 | `filterBcConns` | `true` | Zgodnie z sekcją 6 instrukcji. |
 | `signaling` | `wss://` z ustawień, domyślnie trzy serwery | Tylko wss — po `ws://` metadane szłyby otwartym tekstem. Trzy, bo gdy jedyny domyślny padł, objaw był mylący: sesja startowała, kod się generował, a druga osoba po prostu nigdy się nie pojawiała. y-webrtc łączy się ze wszystkimi naraz, więc wystarczy jeden działający. |
 | `iceServers` | STUN + opcjonalny TURN | TURN dla sieci blokujących połączenia bezpośrednie. |
-| Kursory | ~20 Hz | Z domknięciem ostatniej pozycji, żeby cudzy kursor nie zamarzał w locie. |
+| Kursory | ~20 Hz w sieci, 60 Hz na ekranie | Z domknięciem ostatniej pozycji, żeby cudzy kursor nie zamarzał w locie. Odbiorca trzyma osobno pozycję pokazywaną i dociąga ją do ostatniej znanej co klatkę — bez tego kursor skakał co 50 ms i to było widać jako „klatkowanie” drugiej osoby. Zmierzone: 180 różnych pozycji na 180 klatek zamiast ~60 na 180. Warstwa kursorów nie jest już przebudowywana przy każdej klatce, tylko przesuwana `transform`-em. |
 | Rozmiar dokumentu | 200 MB | Po przekroczeniu sesja przerywa się z komunikatem. |
 
 Panel sesji otwiera kropka na dole paska narzędzi i robi obie rzeczy: wkleja się

@@ -2777,33 +2777,124 @@
   }
 
   /** Kursory innych osób. Nazwy trafiają wyłącznie do textContent. */
-  function renderPeers() {
-    peersLayer.replaceChildren();
-    if (!sessionActive()) return;
+  // Cudzy kursor dociera ~20 razy na sekundę, a ekran odświeża się 60 razy.
+  // Stawianie go wprost tam, gdzie przyszła ostatnia paczka, daje skok co 50 ms
+  // i to jest to, co widać jako „klatkowanie” drugiej osoby. Trzymamy więc
+  // osobno pozycję POKAZYWANĄ i dociągamy ją do ostatniej znanej co klatkę.
+  const peerNodes = new Map(); // clientId -> { root, dot, label, name, color, shown }
+  // Ile drogi do celu pokonujemy w jednej klatce. 0,25 daje dogonienie w ~50 ms,
+  // czyli dokładnie w takt nadchodzących paczek — bez wleczenia się za ręką.
+  const PEER_CATCH_UP = 0.25;
+  let peerAnimation = 0;
 
-    for (const peer of peers) {
-      if (!peer.cursor) continue;
-      const x = (peer.cursor.x - view.x) * view.scale;
-      const y = (peer.cursor.y - view.y) * view.scale;
-      if (x < -60 || x > viewW + 60 || y < -60 || y > viewH + 60) continue;
-
-      const node = document.createElement('div');
-      node.className = 'peer';
-      node.style.left = Math.round(x) + 'px';
-      node.style.top = Math.round(y) + 'px';
-
+  function peerNodeFor(peer) {
+    let node = peerNodes.get(peer.clientId);
+    if (!node) {
+      const root = document.createElement('div');
+      root.className = 'peer';
       const dot = document.createElement('span');
       dot.className = 'peer-dot';
-      dot.style.background = peer.color;
-
       const label = document.createElement('span');
       label.className = 'peer-name';
-      label.style.background = peer.color;
-      label.textContent = peer.name;
-
-      node.append(dot, label);
-      peersLayer.append(node);
+      root.append(dot, label);
+      peersLayer.append(root);
+      node = { root, dot, label, name: null, color: null, shown: null };
+      peerNodes.set(peer.clientId, node);
     }
+    if (node.name !== peer.name) {
+      node.label.textContent = peer.name; // nigdy innerHTML — to tekst od obcej osoby
+      node.name = peer.name;
+    }
+    if (node.color !== peer.color) {
+      node.dot.style.background = peer.color;
+      node.label.style.background = peer.color;
+      node.color = peer.color;
+    }
+    return node;
+  }
+
+  /** Ustawia węzły tam, gdzie są POKAZYWANE pozycje. Woła to i render, i animacja. */
+  function placePeers() {
+    for (const peer of peers) {
+      const node = peerNodes.get(peer.clientId);
+      if (!node || !node.shown) continue;
+      const x = (node.shown.x - view.x) * view.scale;
+      const y = (node.shown.y - view.y) * view.scale;
+      // Poza ekranem nie ma czego rysować, ale węzeł zostaje — powrót ma być
+      // natychmiastowy, bez odbudowywania DOM-u.
+      const widoczny = x >= -60 && x <= viewW + 60 && y >= -60 && y <= viewH + 60;
+      node.root.style.display = widoczny ? '' : 'none';
+      if (!widoczny) continue;
+      node.root.style.transform = 'translate(' + Math.round(x) + 'px,' + Math.round(y) + 'px)';
+    }
+  }
+
+  function stepPeerCursors() {
+    let wciazJada = false;
+    for (const peer of peers) {
+      const node = peerNodes.get(peer.clientId);
+      if (!node) continue;
+      if (!peer.cursor) {
+        node.root.style.display = 'none';
+        node.shown = null;
+        continue;
+      }
+      if (!node.shown) {
+        // Pierwsze pojawienie się: bez dojeżdżania z rogu ekranu.
+        node.shown = { x: peer.cursor.x, y: peer.cursor.y };
+        continue;
+      }
+      const dx = peer.cursor.x - node.shown.x;
+      const dy = peer.cursor.y - node.shown.y;
+      // Poniżej pół jednostki świata dalsze dociąganie i tak nie zmieni piksela.
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
+        node.shown.x = peer.cursor.x;
+        node.shown.y = peer.cursor.y;
+        continue;
+      }
+      node.shown.x += dx * PEER_CATCH_UP;
+      node.shown.y += dy * PEER_CATCH_UP;
+      wciazJada = true;
+    }
+    return wciazJada;
+  }
+
+  function animatePeers() {
+    peerAnimation = 0;
+    const wciazJada = stepPeerCursors();
+    placePeers();
+    // Pętla kręci się tylko wtedy, gdy naprawdę jest co dociągać.
+    if (wciazJada) schedulePeerAnimation();
+  }
+
+  function schedulePeerAnimation() {
+    if (peerAnimation) return;
+    peerAnimation = requestAnimationFrame(animatePeers);
+  }
+
+  function renderPeers() {
+    if (!sessionActive()) {
+      if (peerNodes.size > 0) {
+        peersLayer.replaceChildren();
+        peerNodes.clear();
+      }
+      return;
+    }
+
+    const obecni = new Set();
+    for (const peer of peers) {
+      obecni.add(peer.clientId);
+      peerNodeFor(peer);
+    }
+    for (const [clientId, node] of peerNodes) {
+      if (obecni.has(clientId)) continue;
+      node.root.remove();
+      peerNodes.delete(clientId);
+    }
+
+    stepPeerCursors();
+    placePeers();
+    schedulePeerAnimation();
   }
 
   function startSession(code, options) {
