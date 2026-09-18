@@ -96,14 +96,15 @@ function verifyPackage(appDir, label) {
   // main.js i preload.js nie są w index.html, a bez nich nie ma aplikacji.
   // pdf.bundle.js ładuje się dopiero przy imporcie PDF-a, więc nie ma go
   // w index.html i skan referencji by go przeoczył.
-  for (const required of ['main.js', 'preload.js', 'notebook-file.js', 'renderer/vendor/pdf.bundle.js']) {
-    if (!inside.has(required)) missing.push(required);
+  const required = ['main.js', 'preload.js', 'notebook-file.js', 'renderer/vendor/pdf.bundle.js'];
+  for (const name of required) {
+    if (!inside.has(name)) missing.push(name);
   }
 
   if (missing.length > 0) {
     throw new Error(label + ': w paczce brakuje plików: ' + missing.join(', '));
   }
-  return referenced.length + 3;
+  return referenced.length + required.length;
 }
 
 function zipFolder(folder) {
