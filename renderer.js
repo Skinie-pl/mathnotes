@@ -23,6 +23,9 @@
   const LIVE_STROKE_QUIET_MS = 400;
   const AUTOSAVE_INTERVAL_MS = 10 * 60 * 1000;
   const MIN_SELECTION_SIZE = 8;
+  // Ile zdekodowanych obrazów trzymamy naraz. Przy stronach PDF-a to główny
+  // konsument pamięci, a naraz i tak widać najwyżej dwie.
+  const MAX_BITMAPS = 8;
   const PDF_MAX_PAGES = 300;
   const PASTE_PAGE_FRACTION = 0.7;
 
@@ -273,6 +276,29 @@
   // Obrazy
   // ==========================================================================
 
+  /**
+   * Zdekodowana strona PDF-a to kilkanaście megabajtów w pamięci, a notatnik
+   * może mieć ich sto. Trzymamy więc tylko ostatnio oglądane; reszta wraca
+   * z dataUrl-a, gdy znowu wjedzie w widok.
+   */
+  function evictBitmaps() {
+    while (bitmaps.size > MAX_BITMAPS) {
+      const oldest = bitmaps.keys().next().value;
+      const victim = bitmaps.get(oldest);
+      if (victim && typeof victim.close === 'function') victim.close();
+      bitmaps.delete(oldest);
+    }
+  }
+
+  /** Map zachowuje kolejność wstawiania, więc ponowne wstawienie = odświeżenie. */
+  function touchBitmap(id) {
+    if (!bitmaps.has(id)) return null;
+    const bitmap = bitmaps.get(id);
+    bitmaps.delete(id);
+    bitmaps.set(id, bitmap);
+    return bitmap;
+  }
+
   async function decodeImage(image) {
     if (bitmaps.has(image.id)) return;
     bitmaps.set(image.id, null); // znacznik „w trakcie”, żeby nie dekodować dwa razy
@@ -283,6 +309,7 @@
       element.src = image.dataUrl;
       await element.decode();
       bitmaps.set(image.id, await createImageBitmap(element));
+      evictBitmaps();
       invalidateTiles(core.imageBounds(image));
       scheduleRender();
     } catch {
@@ -298,7 +325,7 @@
   }
 
   function drawImage(target, image, transform) {
-    const bitmap = bitmaps.get(image.id);
+    const bitmap = touchBitmap(image.id);
     if (!bitmap) {
       if (!bitmaps.has(image.id)) decodeImage(image);
       return;
@@ -318,6 +345,7 @@
   function findImageAt(point) {
     let hit = null;
     eachImage((image, map) => {
+      if (image.locked) return; // strony PDF-a nie są do łapania kursorem
       if (
         point.x >= image.x &&
         point.x <= image.x + image.w &&
@@ -745,6 +773,7 @@
       if (entry && core.boundsIntersect(entry.bounds, box)) selectedStrokes.add(map);
     }
     eachImage((image, map) => {
+      if (image.locked) return; // tło z PDF-a zostaje na miejscu
       if (core.boundsIntersect(core.imageBounds(image), box)) selectedImages.add(map);
     });
     recomputeSelectionBox();
@@ -1258,6 +1287,170 @@
       flashTitle('MathNotes — nie udało się wstawić obrazu', 3000);
     }
   }
+
+  // ==========================================================================
+  // Wczytany PDF jako tło
+  // ==========================================================================
+
+  let pdfLibPromise = null;
+
+  /**
+   * pdf.js waży półtora megabajta, a większość notatników nigdy go nie tknie,
+   * więc wciągamy go dopiero przy pierwszym imporcie. Ścieżka jest lokalna,
+   * czyli CSP `script-src 'self'` na to pozwala.
+   */
+  function loadPdfLib() {
+    if (pdfLibPromise) return pdfLibPromise;
+    pdfLibPromise = new Promise((resolve, reject) => {
+      const element = document.createElement('script');
+      element.src = 'renderer/vendor/pdf.bundle.js';
+      element.onload = () =>
+        (window.PdfJs ? resolve(window.PdfJs) : reject(new Error('bundle nie wystawił PdfJs')));
+      element.onerror = () => reject(new Error('nie udało się wczytać modułu PDF'));
+      document.head.appendChild(element);
+    });
+    // Nieudane wczytanie nie może zablokować kolejnych prób.
+    pdfLibPromise.catch(() => {
+      pdfLibPromise = null;
+    });
+    return pdfLibPromise;
+  }
+
+  /** Dół tego, co już jest w notatniku — nowe strony idą pod spód, nie na wierzch. */
+  function contentBottom() {
+    let bottom = 0;
+    for (const map of notebook.strokes) {
+      const entry = entryFor(map);
+      if (entry) bottom = Math.max(bottom, entry.bounds.maxY);
+    }
+    eachImage((image) => {
+      bottom = Math.max(bottom, image.y + image.h);
+    });
+    return bottom > 0 ? bottom + core.PDF_PAGE_GAP : 0;
+  }
+
+  /**
+   * Jedna strona PDF-a na obraz. JPEG, bo strona to zdjęcie tekstu: PNG byłby
+   * kilka razy cięższy bez widocznej różnicy, a każda strona idzie do pliku
+   * notatnika i do sesji online.
+   * @returns {Promise<string | null>} dataUrl albo null, gdy strona nie mieści się w limicie
+   */
+  async function rasterizePage(page, size) {
+    const scale = core.PDF_RENDER_WIDTH / size.width;
+    const viewport = page.getViewport({ scale });
+    const off = document.createElement('canvas');
+    off.width = Math.max(1, Math.round(viewport.width));
+    off.height = Math.max(1, Math.round(viewport.height));
+
+    const offCtx = off.getContext('2d');
+    // PDF-y bywają przezroczyste; bez tła atrament lądowałby na czerni.
+    offCtx.fillStyle = '#ffffff';
+    offCtx.fillRect(0, 0, off.width, off.height);
+    await page.render({ canvasContext: offCtx, viewport, canvas: off }).promise;
+
+    for (const quality of [0.85, 0.65, 0.45]) {
+      const dataUrl = off.toDataURL('image/jpeg', quality);
+      if (dataUrl.length <= core.MAX_IMAGE_BYTES) return dataUrl;
+    }
+    return null;
+  }
+
+  async function importPdf(bytes, label) {
+    if (!(bytes instanceof Uint8Array) || bytes.length === 0) return;
+    flashTitle('MathNotes — wczytuję PDF…', 120000);
+    try {
+      const pdfjs = await loadPdfLib();
+      // isEvalSupported: CSP renderera nie ma unsafe-eval, więc pdf.js nie może
+      // nawet spróbować kompilować funkcji czcionkowych.
+      const doc = await pdfjs.getDocument({ data: bytes, isEvalSupported: false }).promise;
+      const count = Math.min(doc.numPages, core.MAX_PDF_PAGES);
+
+      const pages = [];
+      const sizes = [];
+      for (let number = 1; number <= count; number++) {
+        const page = await doc.getPage(number);
+        const viewport = page.getViewport({ scale: 1 });
+        pages.push(page);
+        sizes.push({ width: viewport.width, height: viewport.height });
+      }
+
+      const layout = core.layoutPdfPages(sizes, contentBottom());
+      if (!layout) {
+        flashTitle('MathNotes — nie udało się ułożyć stron tego PDF-a', 3500);
+        return;
+      }
+
+      let added = 0;
+      let skipped = 0;
+      for (let index = 0; index < layout.length; index++) {
+        flashTitle('MathNotes — wczytuję PDF… strona ' + (index + 1) + ' z ' + layout.length, 120000);
+        // pdf.js pracuje na wątku głównym (pod file:// nie ma workerów), więc
+        // oddajemy sterowanie między stronami — inaczej okno wygląda na zawieszone.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        const dataUrl = await rasterizePage(pages[index], sizes[index]);
+        if (!dataUrl) {
+          skipped += 1;
+          continue;
+        }
+        const image = { id: core.createId(), ...layout[index], dataUrl, locked: true };
+        try {
+          if (!notebook.addImage(image)) {
+            skipped += 1; // limit obrazów w notatniku
+            continue;
+          }
+        } catch {
+          skipped += 1; // jedna dziwna strona nie może przerwać całego importu
+          continue;
+        }
+        invalidateTiles(core.imageBounds(image));
+        added += 1;
+      }
+
+      if (added === 0) {
+        flashTitle('MathNotes — nie udało się wczytać żadnej strony', 3500);
+        return;
+      }
+
+      notebook.stopCapturing();
+      updateHistoryButtons();
+      view.y = clampViewY(layout[0].y - 20);
+      view.x = clampViewX(view.x, view.scale);
+      render();
+
+      const pominieto = skipped > 0 ? ', pominięto ' + skipped : '';
+      const obciete = doc.numPages > count ? ' (z ' + doc.numPages + ')' : '';
+      flashTitle('MathNotes — wczytano ' + added + ' str.' + obciete + pominieto + ' z ' + label, 4000);
+    } catch (err) {
+      flashTitle('MathNotes — nie udało się wczytać PDF-a', 3500);
+    }
+  }
+
+  async function doImportPdf() {
+    const result = await window.api.openPdf();
+    if (!result || result.canceled) return;
+    await importPdf(new Uint8Array(result.bytes), result.name);
+  }
+
+  // „Wrzucenie” pliku na okno to najbardziej naturalny gest, więc obsługujemy
+  // też upuszczenie. Bez preventDefault Electron próbowałby nawigować do pliku.
+  document.addEventListener('dragover', (event) => {
+    if (!event.dataTransfer) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  });
+
+  document.addEventListener('drop', async (event) => {
+    if (!event.dataTransfer) return;
+    event.preventDefault();
+    const file = event.dataTransfer.files && event.dataTransfer.files[0];
+    if (!file) return;
+    if (file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name)) {
+      flashTitle('MathNotes — upuść plik PDF', 2500);
+      return;
+    }
+    await importPdf(new Uint8Array(await file.arrayBuffer()), file.name);
+  });
 
   // ==========================================================================
   // Adnotacje
@@ -2111,6 +2304,11 @@
     let needsFullInvalidate = false;
     let annotationsChanged = false;
     let selectionMaybeStale = false;
+    // Pełne przemalowanie jest domyślnie NIEpotrzebne. Kreska, która właśnie
+    // rośnie — moja albo cudza — trafia na ekran ścieżką inkrementalną, więc
+    // odtwarzanie całego widoku tylko po to, żeby narysować to samo drugi raz,
+    // jest czystą stratą.
+    let needsRender = false;
 
     for (const event of events) {
       const target = event.target;
@@ -2119,22 +2317,33 @@
       if (target && target.parent && target.parent.get && target.parent.get('pts') === target) {
         const map = target.parent;
         strokeCache.delete(map);
+        // Moja własna kreska jest już na ekranie — paintLive dorysował ostatni
+        // odcinek, zanim punkty w ogóle poszły do dokumentu. Pełny render tutaj
+        // przemalowywał cały widok przy każdym ruchu pióra: koszt rósł
+        // kwadratowo z długością kreski, a przy canvasie `desynchronized`
+        // wyczyszczone tło potrafiło trafić na ekran przed rysunkiem, czyli
+        // kreska migała w trakcie pisania.
         if (map === activeStrokeMap) continue;
         markLive(map);
         if (!local) {
+          // Cudze kreski też idą inkrementalnie, raz na klatkę.
           pendingRemotePaint.add(map);
           scheduleRemotePaint();
+          continue;
         }
+        needsRender = true;
         continue;
       }
 
       if (target === notebook.annotations) {
         annotationsChanged = true;
+        needsRender = true;
         continue; // adnotacje rysujemy wprost na wierzchu, kafle ich nie trzymają
       }
 
       if (target === notebook.strokes || target === notebook.images) {
         selectionMaybeStale = true;
+        needsRender = true;
         // Dodane elementy unieważniają tylko swoje kafle. Przy usuwaniu nie da
         // się już odczytać, gdzie leżały, więc tam wracamy do pełnego czyszczenia.
         if (event.changes.deleted.size > 0) needsFullInvalidate = true;
@@ -2152,6 +2361,7 @@
         if (fresh) invalidateTiles(fresh.bounds);
         else needsFullInvalidate = true;
         selectionMaybeStale = true;
+        needsRender = true;
       }
     }
 
@@ -2164,8 +2374,10 @@
     // Cudza zmiana też jest zmianą niezapisaną: bez tego zamknięcie okna po
     // sesji wyrzuciłoby cudzą pracę bez pytania. Wczytanie pliku to nie zmiana.
     if (transaction.origin !== LOAD_ORIGIN) setDirty(true);
-    updateHistoryButtons();
-    scheduleRender();
+    if (needsRender) {
+      updateHistoryButtons();
+      scheduleRender();
+    }
   }
 
   // ==========================================================================
@@ -2653,6 +2865,7 @@
     'file:save': () => doSave(false),
     'file:save-as': () => doSave(true),
     'file:export-pdf': exportPdf,
+    'file:import-pdf': doImportPdf,
     'edit:undo': () => {
       clearSelection();
       notebook.undo();
@@ -2754,6 +2967,7 @@
       notebook.stopCapturing();
     },
     peers: () => peers.map((p) => p.name + '/' + p.color),
+    zaznaczenie: () => selectedStrokes.size + ' kresek, ' + selectedImages.size + ' obrazow',
     bitmapy: () => [...bitmaps.entries()].map(([id, b]) => id.slice(0,6) + '=' + (b ? 'ok' : 'null')).join(','),
   };
   window.api.ready();

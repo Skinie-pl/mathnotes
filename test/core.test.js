@@ -543,3 +543,70 @@ test('wklejany obraz mieści się w kartce niezależnie od powiększenia', () =>
     }
   }
 });
+
+// --- Strony wczytanego PDF-a -------------------------------------------------
+
+test('layoutPdfPages układa strony w pionie, każdą na pełną szerokość kartki', () => {
+  const layout = core.layoutPdfPages([
+    { width: 595, height: 842 }, // A4 pionowo
+    { width: 842, height: 595 }, // A4 poziomo
+  ]);
+
+  assert.equal(layout.length, 2);
+  for (const box of layout) {
+    assert.equal(box.x, 0);
+    assert.equal(box.w, core.PAGE_WIDTH, 'strona zajmuje całą szerokość kartki');
+  }
+  // Proporcje muszą zostać zachowane, inaczej tekst byłby rozciągnięty.
+  assert.ok(Math.abs(layout[0].h - core.PAGE_WIDTH * (842 / 595)) < 1);
+  assert.ok(Math.abs(layout[1].h - core.PAGE_WIDTH * (595 / 842)) < 1);
+  assert.equal(layout[0].y, 0);
+  assert.equal(layout[1].y, layout[0].h + core.PDF_PAGE_GAP, 'druga strona zaczyna się pod pierwszą');
+});
+
+test('layoutPdfPages zaczyna od podanej wysokości, żeby nie przykryć notatek', () => {
+  const layout = core.layoutPdfPages([{ width: 100, height: 100 }], 5000);
+  assert.equal(layout[0].y, 5000);
+});
+
+test('layoutPdfPages odrzuca bzdurne rozmiary, zamiast liczyć NaN', () => {
+  assert.equal(core.layoutPdfPages([]), null);
+  assert.equal(core.layoutPdfPages(null), null);
+  assert.equal(core.layoutPdfPages([{ width: 0, height: 100 }]), null);
+  assert.equal(core.layoutPdfPages([{ width: 100, height: -1 }]), null);
+  assert.equal(core.layoutPdfPages([{ width: Number.NaN, height: 100 }]), null);
+  assert.equal(core.layoutPdfPages([{ width: 100, height: 100 }], -1), null);
+});
+
+test('layoutPdfPages urywa się na dole świata zamiast kłaść strony poza nim', () => {
+  const duzo = new Array(core.MAX_PDF_PAGES).fill({ width: 10, height: 10000 });
+  const layout = core.layoutPdfPages(duzo);
+  assert.ok(layout.length < duzo.length, 'nie wszystkie strony się mieszczą');
+  for (const box of layout) {
+    assert.ok(box.y + box.h <= core.MAX_WORLD_Y, 'żadna strona nie wystaje poza świat');
+  }
+});
+
+test('obraz jest zablokowany tylko wtedy, gdy jawnie tak powiedziano', () => {
+  const dataUrl = 'data:image/png;base64,aGVsbG8=';
+  const base = { id: 'a1', x: 0, y: 0, w: 10, h: 10, dataUrl };
+
+  assert.equal(core.validateImage(base).locked, false, 'domyślnie obraz jest ruchomy');
+  assert.equal(core.validateImage({ ...base, locked: true }).locked, true);
+  // Wartości „prawdziwe inaczej” nie mogą zamrozić obrazu przez przypadek.
+  assert.equal(core.validateImage({ ...base, locked: 'tak' }).locked, false);
+  assert.equal(core.validateImage({ ...base, locked: 1 }).locked, false);
+});
+
+test('pliki sprzed wersji 5 dostają ruchome obrazy, a nie zamrożone tło', () => {
+  const stary = {
+    version: 4,
+    meta: { title: 'Stary' },
+    strokes: [],
+    images: [{ id: 'i1', x: 0, y: 0, w: 10, h: 10, dataUrl: 'data:image/png;base64,aGVsbG8=' }],
+    annotations: [],
+  };
+  const { state } = core.normalizeState(stary);
+  assert.equal(state.version, core.FILE_FORMAT_VERSION);
+  assert.equal(state.images[0].locked, false, 'ręcznie wklejony obraz zostaje ruchomy');
+});

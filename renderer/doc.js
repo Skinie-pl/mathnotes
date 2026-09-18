@@ -197,6 +197,7 @@
         w: input.w,
         h: input.h,
         dataUrl: input.dataUrl,
+        locked: input.locked,
       });
       if (!candidate) throw new TypeError('addImage: obraz nie przechodzi walidacji formatu');
       if (this.images.length >= core.MAX_IMAGES) return null;

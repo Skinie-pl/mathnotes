@@ -11,9 +11,11 @@ const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
 const ENTRY = path.join(__dirname, 'collab-entry.js');
+const PDF_ENTRY = path.join(__dirname, 'pdf-entry.js');
 const SHIMS = path.join(__dirname, 'node-shims.js');
 const VENDOR_DIR = path.join(ROOT, 'renderer', 'vendor');
 const OUTFILE = path.join(VENDOR_DIR, 'collab.bundle.js');
+const PDF_OUTFILE = path.join(VENDOR_DIR, 'pdf.bundle.js');
 
 // jsPDF publikuje gotowy UMD, więc nie ma czego sklejać — kopiujemy artefakt
 // autora, sprawdzamy pod CSP i commitujemy razem z resztą vendora.
@@ -46,7 +48,7 @@ function checkCsp(code) {
 function pinnedVersions() {
   const pkg = require(path.join(ROOT, 'package.json'));
   const all = { ...pkg.dependencies, ...pkg.devDependencies };
-  return ['yjs', 'y-webrtc', 'y-protocols', 'lib0', 'simple-peer', 'jspdf'].map((name) => {
+  return ['yjs', 'y-webrtc', 'y-protocols', 'lib0', 'simple-peer', 'jspdf', 'pdfjs-dist'].map((name) => {
     const installed = require(path.join(ROOT, 'node_modules', name, 'package.json')).version;
     return { name, declared: all[name], installed };
   });
@@ -114,7 +116,37 @@ async function main() {
   }
   fs.writeFileSync(JSPDF_OUT, jspdf);
 
+  // --- pdf.js --------------------------------------------------------------
+
+  await esbuild.build({
+    entryPoints: [PDF_ENTRY],
+    outfile: PDF_OUTFILE,
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: TARGET,
+    legalComments: 'eof',
+    // Tu minifikujemy: źródła pdf.js to już zminifikowane artefakty autora,
+    // więc diff i tak jest nieczytelny, a plik jest duży.
+    minify: true,
+    sourcemap: false,
+    logLevel: 'warning',
+  });
+
+  const pdfCode = fs.readFileSync(PDF_OUTFILE, 'utf8');
+  const pdfProblems = checkCsp(pdfCode);
+  if (pdfProblems.length > 0) {
+    fs.rmSync(PDF_OUTFILE, { force: true });
+    throw new Error('Bundle pdf.js łamie CSP renderera:\n  ' + pdfProblems.join('\n  '));
+  }
+  if (!pdfCode.includes('globalThis.PdfJs') || !pdfCode.includes('globalThis.pdfjsWorker')) {
+    fs.rmSync(PDF_OUTFILE, { force: true });
+    throw new Error('Bundle pdf.js nie wystawia obu globali — sprawdź scripts/pdf-entry.js');
+  }
+
   const kb = (Buffer.byteLength(code, 'utf8') / 1024).toFixed(0);
+  const pdfKb = (Buffer.byteLength(pdfCode, 'utf8') / 1024).toFixed(0);
+  console.log('Zbudowano ' + path.relative(ROOT, PDF_OUTFILE) + ' (' + pdfKb + ' kB)');
   const jspdfKb = (Buffer.byteLength(jspdf, 'utf8') / 1024).toFixed(0);
   console.log('Skopiowano ' + path.relative(ROOT, JSPDF_OUT) + ' (' + jspdfKb + ' kB)');
   console.log('Zbudowano ' + path.relative(ROOT, OUTFILE) + ' (' + kb + ' kB)');

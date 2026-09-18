@@ -22,7 +22,15 @@
 
   // --- Połączenie ----------------------------------------------------------
 
-  const DEFAULT_SIGNALING = Object.freeze(['wss://y-webrtc-eu.fly.dev']);
+  // Więcej niż jeden, bo to jedyny element trybu online, którego nie mamy.
+  // Gdy jedyny domyślny serwer padł, objaw był mylący: sesja startowała, kod
+  // się generował, a druga osoba po prostu nigdy się nie pojawiała. y-webrtc
+  // łączy się ze wszystkimi naraz, więc wystarczy, że działa którykolwiek.
+  const DEFAULT_SIGNALING = Object.freeze([
+    'wss://demos.yjs.dev/ws',
+    'wss://yjs-signaling.fly.dev',
+    'wss://y-webrtc-eu.fly.dev',
+  ]);
   const DEFAULT_ICE_SERVERS = Object.freeze([{ urls: 'stun:stun.l.google.com:19302' }]);
   const MAX_PEERS = 9; // razem z tobą maksymalnie 10 osób
   const MAX_SIGNALING_SERVERS = 5;

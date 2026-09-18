@@ -86,7 +86,12 @@ function createWindow() {
     show: false,
     backgroundColor: '#000000',
     title: APP_NAME,
-    autoHideMenuBar: !isMac,
+    // Na macOS menu siedzi w pasku systemowym i okno go nie potrzebuje.
+    // Na Windowsie i Linuksie menu JEST w oknie, więc chowanie go za Altem
+    // (autoHideMenuBar) zabierało jedyne dojście do „Otwórz…", eksportu PDF
+    // czy trybu online. Wąski pasek na górze to mniejsza strata niż funkcje,
+    // których nie da się znaleźć.
+    autoHideMenuBar: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -204,6 +209,32 @@ ipcMain.handle('notebook:open', async (event) => {
     return await openFromPath(filePaths[0]);
   } catch (err) {
     showError('Nie udało się otworzyć', err.message);
+    return { canceled: true };
+  }
+});
+
+// Wczytanie PDF-a do pisania po nim. Renderer dostaje wyłącznie bajty — nazwa
+// pliku idzie osobno i tylko do pokazania, a ścieżka nie opuszcza main.js.
+ipcMain.handle('pdf:open', async (event) => {
+  if (!isTrustedSender(event)) return { canceled: true };
+
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: 'Wczytaj PDF jako tło',
+    properties: ['openFile'],
+    filters: [{ name: 'Dokumenty PDF', extensions: ['pdf'] }],
+  });
+  if (canceled || filePaths.length === 0) return { canceled: true };
+
+  try {
+    const stat = await fs.stat(filePaths[0]);
+    if (stat.size > MAX_PDF_BYTES) {
+      showError('Plik jest za duży', 'PDF może mieć najwyżej ' + Math.round(MAX_PDF_BYTES / 1024 / 1024) + ' MB.');
+      return { canceled: true };
+    }
+    const bytes = await fs.readFile(filePaths[0]);
+    return { name: path.basename(filePaths[0]), bytes: new Uint8Array(bytes) };
+  } catch (err) {
+    showError('Nie udało się wczytać PDF-a', err.message);
     return { canceled: true };
   }
 });
@@ -382,6 +413,8 @@ async function buildMenu() {
       item('Zapisz', 'file:save', 'CmdOrCtrl+S'),
       item('Zapisz jako…', 'file:save-as', 'CmdOrCtrl+Shift+S'),
       item('Eksportuj do PDF…', 'file:export-pdf'),
+      { type: 'separator' },
+      item('Wczytaj PDF jako tło…', 'file:import-pdf'),
       { type: 'separator' },
       isMac ? { role: 'close', label: 'Zamknij okno' } : { role: 'quit', label: 'Zamknij' },
     ],

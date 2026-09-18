@@ -43,6 +43,8 @@ npm test
 - **Kratka w tle** z własnym kolorem i przezroczystością, z rozstawem dobieranym
   do powiększenia.
 - **Tryb biały** — biała kartka zamiast czarnej (menu Widok).
+- **Wczytanie PDF-a jako tła** — upuść plik na okno albo Plik → „Wczytaj PDF
+  jako tło…". Strony stają się kartkami notatnika, po których się pisze.
 - **Eksport do PDF** ze stronicowaniem A4 (do 300 stron).
 - **Konfigurowalne skróty klawiszowe** z panelem i przywracaniem domyślnych.
 - **Autozapis** co 10 minut do już otwartego pliku oraz dopytanie o zapis przy
@@ -66,6 +68,7 @@ Bez bundlera i bez transpilacji w runtime — zwykłe pliki `.js` ładowane prze
 | `renderer/style.css` | Wygląd. |
 | `renderer/vendor/` | Zvendorowane biblioteki, budowane przez `npm run vendor`. |
 | `scripts/webrtc-frames.js` | Dzielenie wiadomości na ramki dla kanału WebRTC; wchodzi do bundle'a. |
+| `scripts/pdf-entry.js` | Zakres bundle'a pdf.js (biblioteka + jej worker na wątku głównym). |
 
 ### Zależności i `npm run vendor`
 
@@ -76,10 +79,11 @@ ich wprost wpiąć przez `<script>`. Jedyny wyjątek od zasady „bez build step
 npm run vendor
 ```
 
-Skrypt robi dwie rzeczy: skleja esbuildem Yjs i y-webrtc w jeden
+Skrypt robi trzy rzeczy: skleja esbuildem Yjs i y-webrtc w jeden
 `renderer/vendor/collab.bundle.js` wystawiający
 `window.Collab = { Y, WebrtcProvider, awarenessProtocol }`, oraz kopiuje gotowy
-UMD jsPDF do `renderer/vendor/jspdf.umd.min.js`. Oba wyniki są commitowane, więc
+UMD jsPDF do `renderer/vendor/jspdf.umd.min.js`, oraz skleja pdf.js w
+`renderer/vendor/pdf.bundle.js` (`window.PdfJs`). Wszystkie wyniki są commitowane, więc
 aplikacja jest samowystarczalna po spakowaniu. Uruchamiaj go **tylko** przy
 aktualizacji tych bibliotek, nigdy w `npm start`. Wersje są przypięte dokładnie
 (bez `^`) i trzymane w `devDependencies`, bo do runtime'u trafia wyłącznie
@@ -171,7 +175,7 @@ Binarnego stanu Yjs nie zapisujemy — format ma być niezależny od biblioteki.
 
 ```jsonc
 {
-  "version": 4,
+  "version": 5,
   "meta": { "title": "", "grid": { "enabled": false, "color": "#4c8dff", "opacity": 0.18 } },
   "strokes": [{
     "id": "a1",
@@ -182,7 +186,8 @@ Binarnego stanu Yjs nie zapisujemy — format ma być niezależny od biblioteki.
     "pressureEnabled": false,
     "pts": [10, 20, 0.5]       // płasko [x, y, nacisk, ...], 0,1 px i 0,01 nacisku
   }],
-  "images": [{ "id": "i1", "x": 0, "y": 0, "w": 100, "h": 50, "dataUrl": "data:image/png;base64,…" }],
+  // locked = strona wczytanego PDF-a: nie da się jej zaznaczyć ani przesunąć
+  "images": [{ "id": "i1", "x": 0, "y": 0, "w": 100, "h": 50, "locked": false, "dataUrl": "data:image/…" }],
   "annotations": [{ "id": "n1", "y": 420, "label": "Rozdział 1" }]
 }
 ```
@@ -276,6 +281,26 @@ ekran: w takim powiększeniu kafel byłby ogromny, a widocznych kresek jest mał
 Kreska, która właśnie rośnie — moja albo cudza — żyje na wierzchu i trafia do
 kafla dopiero, gdy przestanie się zmieniać.
 
+**W trakcie pociągnięcia nie ma pełnego przemalowania i to jest warunek
+płynności.** Punkty lecą do Y.Doc raz na klatkę, a `handleDocChange` rozpoznaje,
+że zmieniła się wyłącznie kreska rysowana właśnie tutaj, i nie planuje renderu —
+piksele są już na ekranie z `paintLive`. Wcześniej każdy ruch pióra czyścił cały
+canvas i odtwarzał widok od zera: jedno pociągnięcie o 120 punktach kosztowało
+122 pełne przemalowania i 7619 wywołań `stroke()` zamiast 2 i 360, bo rosnąca
+kreska była rysowana od początku przy każdej klatce. Przy canvasie
+`desynchronized` (który jest tu po to, żeby skrócić drogę od pióra do piksela)
+wyczyszczone tło potrafiło trafić na ekran przed rysunkiem — i to jest dokładnie
+ten objaw, w którym kreska miga w trakcie pisania, a po oderwaniu pióra wygląda
+normalnie.
+
+Wniosek na przyszłość: cokolwiek dokładasz do `handleDocChange`, nie wołaj stamtąd
+`scheduleRender()` bezwarunkowo. Ustaw flagę i zaplanuj render tylko wtedy, gdy
+zmieniło się coś, czego ścieżka inkrementalna nie narysowała.
+
+Zdekodowane obrazy trzymamy najwyżej `MAX_BITMAPS` naraz, w kolejce LRU. Strona
+PDF-a po zdekodowaniu to kilkanaście megabajtów, a notatnik może ich mieć sto;
+wyrzucony obraz wraca z `dataUrl`-a, gdy znowu wjedzie w widok.
+
 Wejście:
 
 - Pióro i mysz rysują, środkowy przycisk i palec przesuwają widok, odwrócona
@@ -286,6 +311,45 @@ Wejście:
 - Gumka kasuje **wzdłuż przebytej drogi**, nie w punktach próbkowania — przy
   szybkim ruchu przeglądarka scala kilkadziesiąt zdarzeń w jedno i odstęp między
   dwiema pozycjami bywa większy niż średnica gumki.
+
+## Wczytany PDF
+
+Plik upuszczony na okno albo wybrany przez Plik → „Wczytaj PDF jako tło…"
+zamienia się w **zablokowane obrazy tła**: każda strona rozciągnięta na pełną
+szerokość kartki, jedna pod drugą, z przerwą `PDF_PAGE_GAP`. Atrament leży na
+nich tak samo jak na kratce.
+
+Dlaczego strony są zwykłymi obrazami, a nie osobnym bytem: dzięki temu od razu
+działa na nich wszystko, co już umie notatnik — zapis do pliku, kafle, migracje,
+cofanie i synchronizacja w sesji. Jedyne, co trzeba było dołożyć, to flaga
+`locked`, która wypina stronę z zaznaczania (`findImageAt` i `selectInBox`).
+Bez niej jedno pociągnięcie kursorem przesunęłoby tło pod całą notatką.
+
+Strony trafiają **pod** to, co już jest w notatniku (`contentBottom`), więc import
+nigdy niczego nie przykrywa, a `Ctrl+Z` cofa go w całości.
+
+| Parametr | Wartość | Dlaczego |
+| --- | --- | --- |
+| `PDF_RENDER_WIDTH` | 2400 px | Kartka ma 1600 jednostek, więc strona zostaje ostra mniej więcej do 150 % powiększenia. Wyżej rośnie już tylko waga pliku. |
+| `MAX_PDF_PAGES` | 100 | Każda strona to osobny obraz w pliku notatnika. |
+| Format rastra | JPEG 0,85 | Strona to zdjęcie tekstu; PNG byłby kilka razy cięższy bez widocznej różnicy. Przy przekroczeniu 5 MB na obraz schodzimy do 0,65 i 0,45. |
+
+pdf.js (1,5 MB) **nie jest ładowany na starcie** — wchodzi dynamicznym
+`<script>` dopiero przy pierwszym imporcie. Dlatego `scripts/arrange-dist.js`
+sprawdza obecność `renderer/vendor/pdf.bundle.js` jawnie: skan referencji
+w `index.html` by go nie zobaczył, a paczka bez niego wyglądałaby normalnie
+i cicho nie umiała wczytać PDF-a.
+
+**Bez workera.** Chromium pod `file://` nie pozwala utworzyć workera — ani
+z pliku, ani z `blob:`, ani jako moduł (sprawdzone, wszystkie trzy). pdf.js ma
+na to oficjalne wyjście: `globalThis.pdfjsWorker` z `WorkerMessageHandler`
+sprawia, że biblioteka liczy na wątku głównym i niczego nie pobiera. Rasteryzacja
+blokuje więc interfejs, dlatego między stronami oddajemy sterowanie, a postęp
+idzie w tytuł okna. Czcionek standardowych ani cmap nie wozimy — sprawdzone, że
+pdf.js radzi sobie bez nich także z PDF-em, który nie osadza czcionek.
+
+`isEvalSupported: false` przy `getDocument`: CSP renderera nie ma `unsafe-eval`,
+więc pdf.js nie ma nawet próbować kompilować funkcji czcionkowych.
 
 ## Strojenie pióra
 
@@ -328,7 +392,7 @@ Podział jest jednoznaczny wyłącznie dlatego, że obie połowy mają stałą d
 | --- | --- | --- |
 | `maxConns` | 9 | Razem z tobą maksymalnie 10 osób. |
 | `filterBcConns` | `true` | Zgodnie z sekcją 6 instrukcji. |
-| `signaling` | `wss://` z ustawień | Tylko wss — po `ws://` metadane szłyby otwartym tekstem. |
+| `signaling` | `wss://` z ustawień, domyślnie trzy serwery | Tylko wss — po `ws://` metadane szłyby otwartym tekstem. Trzy, bo gdy jedyny domyślny padł, objaw był mylący: sesja startowała, kod się generował, a druga osoba po prostu nigdy się nie pojawiała. y-webrtc łączy się ze wszystkimi naraz, więc wystarczy jeden działający. |
 | `iceServers` | STUN + opcjonalny TURN | TURN dla sieci blokujących połączenia bezpośrednie. |
 | Kursory | ~20 Hz | Z domknięciem ostatniej pozycji, żeby cudzy kursor nie zamarzał w locie. |
 | Rozmiar dokumentu | 200 MB | Po przekroczeniu sesja przerywa się z komunikatem. |

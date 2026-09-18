@@ -11,7 +11,7 @@
   const UNTITLED = 'Nowy notatnik';
 
   // Każda zmiana kształtu zapisywanego stanu = bump wersji + krok w normalizeState.
-  const FILE_FORMAT_VERSION = 4;
+  const FILE_FORMAT_VERSION = 5;
 
   // Kartka, nie płótno: stała szerokość, przewijanie w dół bez końca.
   // Szersza niż w poprzedniej wersji — przy 900 px rysunek szybko dobijał
@@ -56,6 +56,17 @@
   const MAX_IMAGES = 1000;
   const MAX_ANNOTATIONS = 2000;
   const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+  // --- Wczytany PDF --------------------------------------------------------
+  // Strony PDF-a wjeżdżają do notatnika jako zablokowane obrazy tła: nie da się
+  // ich chwycić ani przesunąć, a atrament leży na nich tak samo jak na kratce.
+  const PDF_PAGE_GAP = 48;
+  // Powyżej tego i tak nikt nie pisze po wszystkim, a plik rósłby bez sensu.
+  const MAX_PDF_PAGES = 100;
+  // Szerokość rastra jednej strony w pikselach. Kartka ma 1600 jednostek, więc
+  // 2400 px zostaje ostre mniej więcej do 150 % powiększenia. Wyżej rośnie już
+  // tylko waga pliku: każda strona to osobny obraz w notatniku.
+  const PDF_RENDER_WIDTH = 2400;
   const MAX_TITLE_LENGTH = 200;
   const MAX_LABEL_LENGTH = 120;
   // Sesja online przerywa się po przekroczeniu tego rozmiaru dokumentu.
@@ -99,6 +110,7 @@
     'file:save',
     'file:save-as',
     'file:export-pdf',
+    'file:import-pdf',
     'edit:undo',
     'edit:redo',
     'edit:keymap',
@@ -520,6 +532,36 @@
     };
   }
 
+  /**
+   * Układa strony PDF-a w pionie, każdą na pełną szerokość kartki.
+   * Czysta geometria: renderer podaje rozmiary stron z pdf.js, dostaje
+   * prostokąty świata. Dzięki temu układ da się przetestować bez canvasa.
+   * @param {{width: number, height: number}[]} sizes rozmiary stron
+   * @param {number} [startY] od jakiej wysokości układać — nowy PDF ląduje pod
+   *   tym, co już jest w notatniku, więc nic się nie przykrywa
+   * @returns {{x: number, y: number, w: number, h: number}[] | null}
+   */
+  function layoutPdfPages(sizes, startY) {
+    if (!Array.isArray(sizes) || sizes.length === 0) return null;
+    if (startY !== undefined && (!isFiniteNumber(startY) || startY < 0)) return null;
+    const out = [];
+    let y = startY || 0;
+    for (const size of sizes) {
+      if (!isPlainObject(size)) return null;
+      if (!isFiniteNumber(size.width) || !isFiniteNumber(size.height)) return null;
+      if (size.width <= 0 || size.height <= 0) return null;
+
+      const h = roundCoord(PAGE_WIDTH * (size.height / size.width));
+      if (h <= 0) return null;
+      // Świat kończy się w pionie; dalszych stron po prostu nie ma gdzie położyć.
+      if (y + h > MAX_WORLD_Y) break;
+
+      out.push({ x: 0, y: roundCoord(y), w: PAGE_WIDTH, h });
+      y += h + PDF_PAGE_GAP;
+    }
+    return out.length > 0 ? out : null;
+  }
+
   function validateImage(value) {
     if (!isPlainObject(value)) return null;
     if (typeof value.id !== 'string' || !ID_RE.test(value.id)) return null;
@@ -544,6 +586,10 @@
       w: roundCoord(value.w),
       h: roundCoord(value.h),
       dataUrl: url,
+      // Strona wczytanego PDF-a. Zablokowanego obrazu nie da się zaznaczyć ani
+      // przesunąć — inaczej jedno pociągnięcie kursorem rozjechałoby tło pod
+      // całą notatką. Wszystko inne (w tym pliki sprzed wersji 5) jest wolne.
+      locked: value.locked === true,
     };
   }
 
@@ -671,7 +717,18 @@
     return { ...raw, version: 4, meta: { ...(isPlainObject(raw.meta) ? raw.meta : {}), grid: DEFAULT_GRID } };
   }
 
-  const MIGRATIONS = { 1: migrateV1ToV2, 2: migrateV2ToV3, 3: migrateV3ToV4 };
+  // Obrazy sprzed wersji 5 to wyłącznie rzeczy wklejone ręcznie, a te mają
+  // zostać ruchome. Nowe pole dostaje więc jawne `false`, a nie brak wartości.
+  function migrateV4ToV5(raw) {
+    const images = Array.isArray(raw.images) ? raw.images : [];
+    return {
+      ...raw,
+      version: 5,
+      images: images.map((image) => (isPlainObject(image) ? { ...image, locked: false } : image)),
+    };
+  }
+
+  const MIGRATIONS = { 1: migrateV1ToV2, 2: migrateV2ToV3, 3: migrateV3ToV4, 4: migrateV4ToV5 };
 
   /**
    * Doprowadza surowy JSON z pliku (albo z sesji) do bieżącego formatu.
@@ -756,6 +813,7 @@
     map.set('w', image.w);
     map.set('h', image.h);
     map.set('dataUrl', image.dataUrl);
+    map.set('locked', image.locked === true);
     return map;
   }
 
@@ -860,6 +918,7 @@
     unionBounds,
     boundsInside,
     fitImageIntoPage,
+    layoutPdfPages,
 
     // enumy i limity
     TOOLS,
@@ -872,6 +931,9 @@
     MAX_IMAGES,
     MAX_ANNOTATIONS,
     MAX_IMAGE_BYTES,
+    PDF_PAGE_GAP,
+    MAX_PDF_PAGES,
+    PDF_RENDER_WIDTH,
     MAX_LABEL_LENGTH,
     MAX_DOC_BYTES,
 

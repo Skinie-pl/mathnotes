@@ -56,6 +56,14 @@ contextBridge.exposeInMainWorld('api', {
     return ipcRenderer.invoke('notebook:new');
   },
 
+  /**
+   * Wybór PDF-a do pisania po nim. Main czyta plik sam i oddaje same bajty.
+   * @returns {Promise<{name: string, bytes: Uint8Array} | {canceled: true}>}
+   */
+  openPdf() {
+    return ipcRenderer.invoke('pdf:open');
+  },
+
   /** @returns {Promise<{name: string} | {canceled: true}>} */
   savePdf(data, suggestedName) {
     return ipcRenderer.invoke('pdf:save', { data, suggestedName });

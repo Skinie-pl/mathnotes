@@ -94,7 +94,9 @@ function verifyPackage(appDir, label) {
 
   const missing = referenced.filter((ref) => !inside.has(ref));
   // main.js i preload.js nie są w index.html, a bez nich nie ma aplikacji.
-  for (const required of ['main.js', 'preload.js', 'notebook-file.js']) {
+  // pdf.bundle.js ładuje się dopiero przy imporcie PDF-a, więc nie ma go
+  // w index.html i skan referencji by go przeoczył.
+  for (const required of ['main.js', 'preload.js', 'notebook-file.js', 'renderer/vendor/pdf.bundle.js']) {
     if (!inside.has(required)) missing.push(required);
   }
 
