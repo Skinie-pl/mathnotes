@@ -940,7 +940,7 @@
   // Przytrzymanie pióra w miejscu na końcu w miarę prostej kreski zamienia ją
   // w odcinek. Dalszy ruch przy wciśniętym piórze ciągnie już tylko koniec tego
   // odcinka, więc da się go dociągnąć dokładnie tam, gdzie ma się kończyć.
-  const STRAIGHTEN_HOLD_MS = 2000;
+  const STRAIGHTEN_HOLD_MS = 1000;
   // Ręka nigdy nie stoi idealnie; poniżej tylu pikseli ekranu to jest bezruch.
   const STRAIGHTEN_MOVE_PX = 6;
 

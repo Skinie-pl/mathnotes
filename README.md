@@ -30,7 +30,7 @@ npm test
   kreski). Grubość 1–30 px, pięć kolorów w edytowalnej palecie, opcjonalna
   zmienna grubość wg nacisku pióra.
 - **Prostowanie przytrzymaniem** — narysuj mniej więcej prostą kreskę i zatrzymaj
-  pióro na końcu na 2 sekundy: kreska zamienia się w odcinek, a dalszy ruch
+  pióro na końcu na sekundę: kreska zamienia się w odcinek, a dalszy ruch
   dociąga jego koniec. Łuk narysowany celowo zostaje łukiem.
 - **Gumka** w dwóch trybach: „Obiekty” kasuje całe kreski i obrazy, „Obszar”
   wycina fragment i dzieli kreskę na pozostałe kawałki.
