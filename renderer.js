@@ -737,6 +737,8 @@
       }
     }
 
+    drawPageOutlines(ctx, visible);
+
     // Kreski, które właśnie rosną — moja i cudze.
     for (const [map, live] of liveStrokes) {
       if (selectedStrokes.has(map)) continue;
@@ -757,6 +759,28 @@
 
     renderPeers();
     updatePageIndicator();
+  }
+
+  /**
+   * Cienka ramka wokół stron wczytanego PDF-a. Przy jasnym PDF-ie kartka i tło
+   * są tego samego koloru, więc bez tego nie widać, gdzie kończy się dokument,
+   * a gdzie zaczyna margines na notatki.
+   *
+   * Rysowana wprost na ekranie, nie do kafli: dzięki temu kreska ma zawsze
+   * jeden piksel niezależnie od powiększenia.
+   */
+  function drawPageOutlines(target, visible) {
+    const strony = pdfPages();
+    if (strony.length === 0) return;
+
+    target.save();
+    target.strokeStyle = theme === 'light' ? 'rgba(0, 0, 0, 0.28)' : 'rgba(255, 255, 255, 0.3)';
+    target.lineWidth = 1 / view.scale;
+    for (const strona of strony) {
+      if (strona.y + strona.h < visible.minY || strona.y > visible.maxY) continue;
+      target.strokeRect(strona.x, strona.y, strona.w, strona.h);
+    }
+    target.restore();
   }
 
   /** Dorysowanie na wierzchu, bez czyszczenia — ścieżka o najniższym opóźnieniu. */
@@ -912,6 +936,51 @@
     requestAnimationFrame(flushToDocument);
   }
 
+  // --- Prostowanie kreski przytrzymaniem ------------------------------------
+  // Przytrzymanie pióra w miejscu na końcu w miarę prostej kreski zamienia ją
+  // w odcinek. Dalszy ruch przy wciśniętym piórze ciągnie już tylko koniec tego
+  // odcinka, więc da się go dociągnąć dokładnie tam, gdzie ma się kończyć.
+  const STRAIGHTEN_HOLD_MS = 2000;
+  // Ręka nigdy nie stoi idealnie; poniżej tylu pikseli ekranu to jest bezruch.
+  const STRAIGHTEN_MOVE_PX = 6;
+
+  let straightenTimer = 0;
+  let straightenAnchor = null;
+  let straightened = false;
+
+  function cancelStraightenWatch() {
+    clearTimeout(straightenTimer);
+    straightenTimer = 0;
+    straightenAnchor = null;
+  }
+
+  function armStraightenWatch(screenPoint) {
+    clearTimeout(straightenTimer);
+    straightenAnchor = screenPoint;
+    straightenTimer = setTimeout(straightenActiveStroke, STRAIGHTEN_HOLD_MS);
+  }
+
+  function straightenActiveStroke() {
+    straightenTimer = 0;
+    if (!activeStroke || !activeStrokeMap || straightened) return;
+
+    const proste = core.straightenStroke(activeStroke);
+    // Łuk narysowany celowo ma zostać łukiem — prostujemy tylko to, co i tak
+    // już jest prawie proste.
+    if (!proste) return;
+
+    activeStroke.pts = proste;
+    pending = [];
+    if (!notebook.setPoints(activeStrokeMap, proste)) return;
+
+    straightened = true;
+    drawnUpTo = core.pointCount(activeStroke);
+    // Pełne przemalowanie, bo kreska się SKRÓCIŁA: dorysowanie na wierzchu nie
+    // zdejmie pikseli po krzywej, którą właśnie zastąpiliśmy.
+    render();
+    flashTitle('MathNotes — wyprostowano kreskę', 1200);
+  }
+
   function beginStroke(event) {
     const point = canvasPoint(event);
     // Poza polem roboczym atrament nie może powstać. Wcześniej punkt był tu
@@ -935,10 +1004,32 @@
     drawnUpTo = 0;
     paintLive(activeStroke, 0);
     drawnUpTo = 1;
+    straightened = false;
+    armStraightenWatch({ x: event.clientX, y: event.clientY });
   }
 
   function extendStroke(event) {
     if (!activeStroke) return;
+
+    // Po wyprostowaniu kreska ma dwa punkty i ruch przesuwa tylko jej koniec.
+    if (straightened) {
+      const koniec = clampWorld(canvasPoint(event));
+      const pts = activeStroke.pts;
+      pts[3] = core.roundCoord(koniec.x);
+      pts[4] = core.roundCoord(koniec.y);
+      notebook.setPoints(activeStrokeMap, pts);
+      drawnUpTo = core.pointCount(activeStroke);
+      scheduleRender();
+      return;
+    }
+
+    // Ruch większy niż drżenie ręki zeruje odliczanie do wyprostowania.
+    if (straightenAnchor) {
+      const dx = event.clientX - straightenAnchor.x;
+      const dy = event.clientY - straightenAnchor.y;
+      if (Math.hypot(dx, dy) > STRAIGHTEN_MOVE_PX) armStraightenWatch({ x: event.clientX, y: event.clientY });
+    }
+
     const samples = typeof event.getCoalescedEvents === 'function' ? event.getCoalescedEvents() : [];
     const list = samples.length > 0 ? samples : [event];
     const pts = activeStroke.pts;
@@ -966,6 +1057,27 @@
 
   function endStroke(event) {
     if (!activeStroke) return;
+    cancelStraightenWatch();
+
+    // Wyprostowana kreska ma dokładnie dwa punkty — domykanie ostatniej próbki
+    // zrobiłoby z niej znowu łamaną.
+    if (straightened) {
+      straightened = false;
+      flushToDocument();
+      const finished = activeStrokeMap;
+      activeStrokeMap = null;
+      activeStroke = null;
+      drawnUpTo = 0;
+      if (finished) {
+        strokeCache.delete(finished);
+        const entry = entryFor(finished);
+        if (entry) paintStrokeIntoTiles(entry.stroke, entry.bounds);
+      }
+      notebook.stopCapturing();
+      updateHistoryButtons();
+      render();
+      return;
+    }
 
     // Wygładzanie przyciąga każdy punkt do poprzedniego, więc ostatnia próbka
     // zawsze trochę zostaje za miejscem, w którym pióro naprawdę się oderwało.
@@ -2972,7 +3084,7 @@
     if (pdfPagesCache !== null) return pdfPagesCache;
     const pages = [];
     eachImage((image) => {
-      if (image.locked) pages.push({ y: image.y, h: image.h });
+      if (image.locked) pages.push({ x: image.x, y: image.y, w: image.w, h: image.h });
     });
     pages.sort((a, b) => a.y - b.y);
     pdfPagesCache = pages;
@@ -3406,6 +3518,12 @@
     zaznaczenie: () => selectedStrokes.size + ' kresek, ' + selectedImages.size + ' obrazow',
     widok: () => ({ x: Math.round(view.x), y: Math.round(view.y), zoom: Math.round(zoomLevel() * 100) }),
     dolDokumentu: () => Math.round(documentBottom()),
+    stronyPdf: () => pdfPages().map((p) => ({ y: p.y, h: p.h })),
+    punktyOstatniejKreski: () => {
+      const n = notebook.strokes.length;
+      if (n === 0) return 0;
+      return core.pointCount(core.validateStroke(notebook.strokes.get(n - 1).toJSON()) || { pts: [] });
+    },
     kursor: () => canvas.style.cursor.length,
     narzedzie: () => tool,
     eksportNaPdf: async () => {

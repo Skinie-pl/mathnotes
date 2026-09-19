@@ -8,7 +8,7 @@
 //
 //   node scripts/smoke-package.js dist/MathNotes-1.1.0-mac-arm64/MathNotes.app
 
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
 
@@ -25,8 +25,12 @@ if (!target) {
  */
 function launcherFor(bundle) {
   if (bundle.endsWith('.app')) {
-    const name = path.basename(bundle, '.app');
-    return { cmd: path.join(bundle, 'Contents', 'MacOS', name), args: [] };
+    // Świadomie przez `open`, a nie przez plik wykonywalny w środku bundle'a.
+    // Uruchomienie Contents/MacOS/... omija LaunchServices i Gatekeepera, więc
+    // przechodzi nawet wtedy, gdy podpis bundle'a jest zepsuty i użytkownik po
+    // podwójnym kliknięciu dostaje „aplikacja jest uszkodzona". Dokładnie to
+    // przeszło kiedyś niezauważone aż do wydania.
+    return { cmd: 'open', args: ['-n', bundle, '--args'], bundle };
   }
   // Katalog projektu — sprawdzamy wersję ze źródeł, tę samą, którą daje `npm start`.
   if (fs.existsSync(path.join(bundle, 'package.json'))) {
@@ -102,8 +106,8 @@ function cdp(url) {
 }
 
 async function main() {
-  const { cmd, args } = launcherFor(target);
-  if (!fs.existsSync(cmd)) throw new Error('Nie ma pliku wykonywalnego: ' + cmd);
+  const { cmd, args, bundle } = launcherFor(target);
+  if (cmd !== 'open' && !fs.existsSync(cmd)) throw new Error('Nie ma pliku wykonywalnego: ' + cmd);
 
   const child = spawn(cmd, [...args, '--remote-debugging-port=' + PORT], { stdio: 'ignore', detached: true });
   const problems = [];
@@ -171,6 +175,15 @@ async function main() {
 
     session.close();
   } finally {
+    if (bundle) {
+      // `open` kończy się od razu, więc jego pid nic nie mówi o aplikacji.
+      const inner = path.join(bundle, 'Contents', 'MacOS');
+      try {
+        execFileSync('pkill', ['-f', inner]);
+      } catch {
+        // pkill zwraca 1, gdy nic nie dopasował — to nie jest błąd.
+      }
+    }
     try {
       process.kill(-child.pid, 'SIGKILL');
     } catch {

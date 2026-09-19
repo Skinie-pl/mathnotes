@@ -29,6 +29,9 @@ npm test
 - **Pióro** z dwoma pędzlami: zwykłym i miękkim (poświata, narastanie na starcie
   kreski). Grubość 1–30 px, pięć kolorów w edytowalnej palecie, opcjonalna
   zmienna grubość wg nacisku pióra.
+- **Prostowanie przytrzymaniem** — narysuj mniej więcej prostą kreskę i zatrzymaj
+  pióro na końcu na 2 sekundy: kreska zamienia się w odcinek, a dalszy ruch
+  dociąga jego koniec. Łuk narysowany celowo zostaje łukiem.
 - **Gumka** w dwóch trybach: „Obiekty” kasuje całe kreski i obrazy, „Obszar”
   wycina fragment i dzieli kreskę na pozostałe kawałki.
 - **Kursor** — zaznaczanie ramką dowolnego fragmentu rysunku (kresek i obrazów),
@@ -390,6 +393,11 @@ cofanie i synchronizacja w sesji. Jedyne, co trzeba było dołożyć, to flaga
 tego jedno machnięcie gumką usuwało stronę tła). Bez tego jedno pociągnięcie
 kursorem przesunęłoby tło pod całą notatką.
 
+Każda strona dostaje cienką ramkę (`drawPageOutlines`), rysowaną wprost na
+ekranie, a nie do kafli — dzięki temu ma zawsze jeden piksel niezależnie od
+powiększenia. Przy jasnym PDF-ie kartka i margines są tego samego koloru, więc
+bez ramki nie było widać, gdzie kończy się dokument.
+
 Numer oglądanej strony pokazuje się w prawym dolnym rogu. Liczy się to, co jest
 na środku ekranu, a nie górna krawędź — dzięki temu numer zmienia się wtedy,
 kiedy naprawdę patrzysz na nową stronę.
@@ -439,6 +447,21 @@ pdf.js radzi sobie bez nich także z PDF-em, który nie osadza czcionek.
 
 `isEvalSupported: false` przy `getDocument`: CSP renderera nie ma `unsafe-eval`,
 więc pdf.js nie ma nawet próbować kompilować funkcji czcionkowych.
+
+### Prostowanie kreski
+
+Przytrzymanie pióra w bezruchu (`STRAIGHTEN_HOLD_MS`, z tolerancją
+`STRAIGHTEN_MOVE_PX` na drżenie ręki) wywołuje `core.straightenStroke`. Ta
+zamienia kreskę w odcinek od pierwszego do ostatniego punktu — **ale tylko
+wtedy, gdy ona i tak już jest prawie prosta**: największe odchylenie od cięciwy
+musi zmieścić się w `STRAIGHTEN_TOLERANCE` jej długości. Bez tego warunku
+zatrzymanie ręki nad celowo narysowanym łukiem niszczyłoby go bez ostrzeżenia.
+
+Kreska przy tym **się skraca**, więc nie da się jej domalować na wierzchu —
+trzeba pełnego przemalowania, żeby zdjąć piksele po poprzednim kształcie.
+Dlatego `doc.js` ma `setPoints` obok `appendPoints`. Po wyprostowaniu ruch pióra
+przesuwa już tylko koniec odcinka, więc da się go dociągnąć dokładnie tam, gdzie
+ma się kończyć.
 
 ## Strojenie pióra
 

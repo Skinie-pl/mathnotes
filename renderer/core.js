@@ -578,6 +578,53 @@
     return out.length > 0 ? out : null;
   }
 
+  // --- Prostowanie kreski przytrzymaniem ------------------------------------
+  // Krótsza kreska nie ma sensownego kierunku, więc jej nie prostujemy.
+  const MIN_STRAIGHTEN_LENGTH = 40;
+  // Największe dopuszczalne odchylenie od cięciwy, jako ułamek jej długości.
+  // Ręcznie ciągnięta „prosta" gubi się o kilka procent; łuk rysowany celowo
+  // wychodzi grubo powyżej i ma zostać łukiem.
+  const STRAIGHTEN_TOLERANCE = 0.12;
+
+  /**
+   * Zamienia kreskę w odcinek od pierwszego do ostatniego punktu — ale tylko
+   * wtedy, gdy ona i tak już jest prawie prosta.
+   * @returns {number[] | null} nowe `pts` albo null, gdy to nie jest prosta
+   */
+  function straightenStroke(stroke) {
+    const n = pointCount(stroke);
+    if (n < 3) return null;
+    const pts = stroke.pts;
+
+    const x0 = pts[0];
+    const y0 = pts[1];
+    const x1 = pts[(n - 1) * 3];
+    const y1 = pts[(n - 1) * 3 + 1];
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const len = Math.hypot(dx, dy);
+    if (!isFiniteNumber(len) || len < MIN_STRAIGHTEN_LENGTH) return null;
+
+    let maxDev = 0;
+    for (let i = 1; i < n - 1; i++) {
+      const px = pts[i * 3];
+      const py = pts[i * 3 + 1];
+      // Odległość punktu od prostej przez (x0,y0) i (x1,y1).
+      const dev = Math.abs(dx * (y0 - py) - (x0 - px) * dy) / len;
+      if (dev > maxDev) maxDev = dev;
+    }
+    if (maxDev > len * STRAIGHTEN_TOLERANCE) return null;
+
+    return [
+      roundCoord(x0),
+      roundCoord(y0),
+      roundPressure(pts[2]),
+      roundCoord(x1),
+      roundCoord(y1),
+      roundPressure(pts[(n - 1) * 3 + 2]),
+    ];
+  }
+
   function validateImage(value) {
     if (!isPlainObject(value)) return null;
     if (typeof value.id !== 'string' || !ID_RE.test(value.id)) return null;
@@ -966,6 +1013,9 @@
     fitImageIntoPage,
     layoutPdfPages,
     pointInPage,
+    straightenStroke,
+    MIN_STRAIGHTEN_LENGTH,
+    STRAIGHTEN_TOLERANCE,
 
     // enumy i limity
     TOOLS,

@@ -84,6 +84,33 @@
      * Punkty spoza strony są pomijane (renderer i tak przycina; to zabezpieczenie).
      * @returns {number} ile punktów faktycznie doszło
      */
+    /**
+     * Zastępuje wszystkie punkty kreski. Używane przy prostowaniu przytrzymaniem:
+     * tam kreska się SKRACA, więc dopisanie punktów nie wystarczy.
+     * @returns {boolean}
+     */
+    setPoints(strokeMap, pts) {
+      if (!strokeMap || !Array.isArray(pts) || pts.length < 6 || pts.length % 3 !== 0) return false;
+      const target = strokeMap.get('pts');
+      if (!target) return false;
+
+      const clean = [];
+      for (let i = 0; i < pts.length; i += 3) {
+        const x = pts[i];
+        const y = pts[i + 1];
+        const p = pts[i + 2];
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+        if (x < 0 || x > core.PAGE_WIDTH || y < 0 || y > core.MAX_PAGE_HEIGHT) return false;
+        clean.push(core.roundCoord(x), core.roundCoord(y), core.roundPressure(p));
+      }
+
+      this.transact(() => {
+        target.delete(0, target.length);
+        target.push(clean);
+      });
+      return true;
+    }
+
     appendPoints(strokeMap, pts) {
       if (!strokeMap || !Array.isArray(pts) || pts.length === 0 || pts.length % 3 !== 0) return 0;
       const target = strokeMap.get('pts');

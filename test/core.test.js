@@ -622,3 +622,55 @@ test('pliki sprzed wersji 5 dostają ruchome obrazy, a nie zamrożone tło', () 
   assert.equal(state.version, core.FILE_FORMAT_VERSION);
   assert.equal(state.images[0].locked, false, 'ręcznie wklejony obraz zostaje ruchomy');
 });
+
+// --- Prostowanie kreski przytrzymaniem ---------------------------------------
+
+function kreskaZPunktow(pts) {
+  return { tool: 'pen', brush: 'pen', color: '#ffffff', size: 4, pressureEnabled: false, pts };
+}
+
+test('straightenStroke prostuje kreskę, która i tak jest prawie prosta', () => {
+  // Ręcznie ciągnięta „prosta": lekko faluje wokół odcinka.
+  const pts = [];
+  for (let i = 0; i <= 20; i++) {
+    pts.push(100 + i * 20, 300 + Math.sin(i / 3) * 4, 0.5);
+  }
+  const proste = core.straightenStroke(kreskaZPunktow(pts));
+
+  assert.ok(proste, 'prawie prosta kreska ma zostać wyprostowana');
+  assert.equal(proste.length, 6, 'zostają dokładnie dwa punkty');
+  assert.equal(proste[0], 100, 'początek zostaje na miejscu');
+  assert.equal(proste[3], 500, 'koniec zostaje na miejscu');
+});
+
+test('straightenStroke nie rusza łuku narysowanego celowo', () => {
+  // Wyraźny łuk: odchylenie od cięciwy to kilkanaście procent jej długości.
+  const pts = [];
+  for (let i = 0; i <= 20; i++) {
+    const t = i / 20;
+    pts.push(100 + t * 400, 300 - Math.sin(t * Math.PI) * 120, 0.5);
+  }
+  assert.equal(core.straightenStroke(kreskaZPunktow(pts)), null, 'łuk ma zostać łukiem');
+});
+
+test('straightenStroke odmawia, gdy nie ma z czego odczytać kierunku', () => {
+  // Za krótka: dwa punkty obok siebie to nie jest kreska o kierunku.
+  assert.equal(core.straightenStroke(kreskaZPunktow([100, 100, 0.5, 105, 102, 0.5, 108, 104, 0.5])), null);
+  // Mniej niż trzy punkty nie ma czego prostować.
+  assert.equal(core.straightenStroke(kreskaZPunktow([100, 100, 0.5, 500, 100, 0.5])), null);
+  // Początek i koniec w tym samym miejscu — brak cięciwy.
+  const petla = [];
+  for (let i = 0; i <= 20; i++) {
+    const a = (i / 20) * Math.PI * 2;
+    petla.push(300 + Math.cos(a) * 80, 300 + Math.sin(a) * 80, 0.5);
+  }
+  assert.equal(core.straightenStroke(kreskaZPunktow(petla)), null);
+});
+
+test('straightenStroke zachowuje nacisk z końców, a nie wymyśla własnego', () => {
+  const proste = core.straightenStroke(
+    kreskaZPunktow([100, 100, 0.2, 300, 101, 0.6, 500, 100, 0.9]),
+  );
+  assert.equal(proste[2], 0.2);
+  assert.equal(proste[5], 0.9);
+});
