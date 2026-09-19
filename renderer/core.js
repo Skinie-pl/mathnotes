@@ -11,7 +11,7 @@
   const UNTITLED = 'Nowy notatnik';
 
   // Każda zmiana kształtu zapisywanego stanu = bump wersji + krok w normalizeState.
-  const FILE_FORMAT_VERSION = 5;
+  const FILE_FORMAT_VERSION = 6;
 
   // Kartka, nie płótno: stała szerokość, przewijanie w dół.
   // Szerokość pola roboczego. Maksymalne oddalenie pokazuje dokładnie tyle —
@@ -606,7 +606,19 @@
       // przesunąć — inaczej jedno pociągnięcie kursorem rozjechałoby tło pod
       // całą notatką. Wszystko inne (w tym pliki sprzed wersji 5) jest wolne.
       locked: value.locked === true,
+      // Oryginalny rozmiar strony PDF-a w punktach. Trzymamy go, żeby eksport
+      // mógł oddać dokument w tym formacie, w którym przyszedł, a nie w A4.
+      ...sourceSize(value),
     };
+  }
+
+  /** @returns {{srcW: number, srcH: number} | {}} */
+  function sourceSize(value) {
+    if (!isFiniteNumber(value.srcW) || !isFiniteNumber(value.srcH)) return {};
+    if (value.srcW <= 0 || value.srcH <= 0) return {};
+    // Rozmiary arkuszy nie bywają większe niż kilka metrów; reszta to bzdura.
+    if (value.srcW > 20000 || value.srcH > 20000) return {};
+    return { srcW: roundCoord(value.srcW), srcH: roundCoord(value.srcH) };
   }
 
   function validateAnnotation(value) {
@@ -744,7 +756,19 @@
     };
   }
 
-  const MIGRATIONS = { 1: migrateV1ToV2, 2: migrateV2ToV3, 3: migrateV3ToV4, 4: migrateV4ToV5 };
+  // Wersja 6 dokłada oryginalny rozmiar strony PDF-a (srcW/srcH). Starsze pliki
+  // go nie mają i nie da się go odtworzyć — eksport użyje wtedy proporcji obrazu.
+  function migrateV5ToV6(raw) {
+    return { ...raw, version: 6 };
+  }
+
+  const MIGRATIONS = {
+    1: migrateV1ToV2,
+    2: migrateV2ToV3,
+    3: migrateV3ToV4,
+    4: migrateV4ToV5,
+    5: migrateV5ToV6,
+  };
 
   /**
    * Doprowadza surowy JSON z pliku (albo z sesji) do bieżącego formatu.
@@ -830,6 +854,10 @@
     map.set('h', image.h);
     map.set('dataUrl', image.dataUrl);
     map.set('locked', image.locked === true);
+    if (isFiniteNumber(image.srcW) && isFiniteNumber(image.srcH)) {
+      map.set('srcW', image.srcW);
+      map.set('srcH', image.srcH);
+    }
     return map;
   }
 

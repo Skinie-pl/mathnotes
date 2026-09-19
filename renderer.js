@@ -266,7 +266,11 @@
 
   function buildTile(index) {
     const s = cacheScale();
-    const tile = { canvas: document.createElement('canvas') };
+    // Skala zapamiętana razem z kaflem: dzięki temu kafel zbudowany przy innym
+    // powiększeniu nadal rysuje się w dobrym miejscu i rozmiarze, tylko mniej
+    // ostro. To jest warunek płynnego zoomu — bez tego jedyną opcją było
+    // wyrzucenie całego cache'u przy każdym kliknięciu kółka.
+    const tile = { canvas: document.createElement('canvas'), scale: s };
     tile.canvas.width = Math.max(1, Math.ceil((core.MAX_WORLD_X - core.MIN_WORLD_X) * s));
     tile.canvas.height = Math.max(1, Math.ceil(core.TILE_HEIGHT * s));
     tile.ctx = tile.canvas.getContext('2d');
@@ -287,6 +291,30 @@
 
     tiles.set(index, tile);
     return tile;
+  }
+
+  /**
+   * Dorysowanie jednej gotowej kreski wprost do istniejących kafli.
+   *
+   * Domyślną reakcją na nową kreskę było unieważnienie kafla, czyli przy
+   * najbliższym rysowaniu odtworzenie go od zera: wszystkie obrazy (a strona
+   * PDF-a to kilkanaście megapikseli) i wszystkie kreski, które go dotykają.
+   * Koszt dopisania jednej kreski rósł więc razem z zawartością kartki — i to
+   * jest to, co było czuć, gdy na stronie zaczynało się robić gęsto.
+   *
+   * Działa tylko dla DOPISANIA. Kasowanie, cofanie i przesuwanie nadal
+   * unieważniają kafel, bo tam trzeba zdjąć piksele, a nie dołożyć.
+   */
+  function paintStrokeIntoTiles(stroke, bounds) {
+    const range = core.tileRange(bounds);
+    if (!range) return;
+    for (let i = range.first; i <= range.last; i++) {
+      const tile = tiles.get(i);
+      if (!tile) continue; // kafla nie ma — zbuduje się w całości, gdy będzie potrzebny
+      const s = tile.scale;
+      tile.ctx.setTransform(s, 0, 0, s, -core.MIN_WORLD_X * s, -i * core.TILE_HEIGHT * s);
+      drawStroke(tile.ctx, stroke, s);
+    }
   }
 
   function evictDistantTiles(first, last) {
@@ -684,15 +712,14 @@
       const range = core.tileRange(visible);
       evictDistantTiles(range.first, range.last);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
-      const s = cacheScale();
       for (let i = range.first; i <= range.last; i++) {
         const tile = tiles.get(i) || buildTile(i);
         ctx.drawImage(
           tile.canvas,
           (core.MIN_WORLD_X - view.x) * view.scale * dpr,
           (i * core.TILE_HEIGHT - view.y) * view.scale * dpr,
-          (tile.canvas.width / s) * view.scale * dpr,
-          (tile.canvas.height / s) * view.scale * dpr,
+          (tile.canvas.width / tile.scale) * view.scale * dpr,
+          (tile.canvas.height / tile.scale) * view.scale * dpr,
         );
       }
       worldTransform(ctx);
@@ -963,7 +990,7 @@
     if (finished) {
       strokeCache.delete(finished);
       const entry = entryFor(finished);
-      if (entry) invalidateTiles(entry.bounds);
+      if (entry) paintStrokeIntoTiles(entry.stroke, entry.bounds);
     }
     // Jedno pociągnięcie = jeden krok cofania, niezależnie od tempa rysowania.
     notebook.stopCapturing();
@@ -1223,6 +1250,34 @@
     if (event.button === 1) event.preventDefault();
   });
 
+  // Po ustaniu ruchu kółkiem kafle są przebudowywane w docelowej ostrości.
+  // W trakcie zoomu są tylko przeskalowywane — przebudowa przy każdym kliknięciu
+  // kółka oznaczała przerysowanie wszystkich kresek i stron PDF-a kilkanaście
+  // razy na sekundę, i to właśnie było widać jako szarpanie przy przybliżaniu.
+  const TILE_RESHARPEN_MS = 180;
+  let resharpenTimer = 0;
+
+  function scheduleResharpen() {
+    clearTimeout(resharpenTimer);
+    resharpenTimer = setTimeout(() => {
+      resharpenTimer = 0;
+      // Różnica poniżej 2 % nie jest widoczna, a przebudowa kosztuje.
+      for (const tile of tiles.values()) {
+        if (Math.abs(tile.scale - cacheScale()) / cacheScale() > 0.02) {
+          tiles.clear();
+          scheduleRender();
+          return;
+        }
+      }
+    }, TILE_RESHARPEN_MS);
+  }
+
+  // Jedno kliknięcie kółka to zwykle deltaY rzędu 100–120. Przy 0,01 dawało to
+  // mnożnik ~3× na klik, czyli skok ze 100 % na 800 % w trzy ruchy — nie dało
+  // się ustawić powiększenia pomiędzy. Przy 0,002 klik to ~1,27×, a drobne
+  // zdarzenia z gładzika (deltaY rzędu 10) dają płynne ~1,02×.
+  const ZOOM_WHEEL_RATE = 0.002;
+
   function zoomAt(sx, sy, factor) {
     const before = screenToWorld(sx, sy);
     const next = clampScale(view.scale * factor);
@@ -1231,7 +1286,7 @@
     const after = screenToWorld(sx, sy);
     view.x = clampViewX(view.x + before.x - after.x, view.scale);
     view.y = clampViewY(view.y + before.y - after.y);
-    tiles.clear();
+    scheduleResharpen();
     updateZoomIndicator();
     scheduleRender();
   }
@@ -1242,7 +1297,7 @@
       event.preventDefault();
       if (event.ctrlKey || event.metaKey) {
         const rect = canvas.getBoundingClientRect();
-        zoomAt(event.clientX - rect.left, event.clientY - rect.top, Math.exp(-event.deltaY * 0.01));
+        zoomAt(event.clientX - rect.left, event.clientY - rect.top, Math.exp(-event.deltaY * ZOOM_WHEEL_RATE));
       } else {
         view.x = clampViewX(view.x + event.deltaX / view.scale, view.scale);
         view.y = clampViewY(view.y + event.deltaY / view.scale);
@@ -1347,7 +1402,7 @@
    * Jedna strona PDF-a na obraz. JPEG, bo strona to zdjęcie tekstu: PNG byłby
    * kilka razy cięższy bez widocznej różnicy, a każda strona idzie do pliku
    * notatnika i do sesji online.
-   * @returns {Promise<string | null>} dataUrl albo null, gdy strona nie mieści się w limicie
+   * @returns {Promise<{dataUrl: string, light: boolean} | null>} null, gdy strona nie mieści się w limicie
    */
   async function rasterizePage(page, size) {
     const scale = core.PDF_RENDER_WIDTH / size.width;
@@ -1362,11 +1417,39 @@
     offCtx.fillRect(0, 0, off.width, off.height);
     await page.render({ canvasContext: offCtx, viewport, canvas: off }).promise;
 
+    const light = pageLooksLight(off);
     for (const quality of [0.85, 0.65, 0.45]) {
       const dataUrl = off.toDataURL('image/jpeg', quality);
-      if (dataUrl.length <= core.MAX_IMAGE_BYTES) return dataUrl;
+      if (dataUrl.length <= core.MAX_IMAGE_BYTES) return { dataUrl, light };
     }
     return null;
+  }
+
+  /**
+   * Czy strona ma jasne tło. Patrzymy na cztery rogi, bo środek prawie zawsze
+   * jest zadrukowany, a rogi trzyma margines dokumentu.
+   */
+  function pageLooksLight(canvasStrony) {
+    const ctx2 = canvasStrony.getContext('2d');
+    const w = canvasStrony.width;
+    const h = canvasStrony.height;
+    const probka = 8;
+    const rogi = [
+      [0, 0],
+      [w - probka, 0],
+      [0, h - probka],
+      [w - probka, h - probka],
+    ];
+    let suma = 0;
+    let ile = 0;
+    for (const [x, y] of rogi) {
+      const dane = ctx2.getImageData(Math.max(0, x), Math.max(0, y), probka, probka).data;
+      for (let i = 0; i < dane.length; i += 4) {
+        suma += (dane[i] + dane[i + 1] + dane[i + 2]) / 3;
+        ile += 1;
+      }
+    }
+    return ile > 0 && suma / ile > 200;
   }
 
   async function importPdf(bytes, label) {
@@ -1398,18 +1481,28 @@
 
       let added = 0;
       let skipped = 0;
+      let pierwszaJasna = false;
       for (let index = 0; index < layout.length; index++) {
         flashTitle('MathNotes — wczytuję PDF… strona ' + (index + 1) + ' z ' + layout.length, 120000);
         // pdf.js pracuje na wątku głównym (pod file:// nie ma workerów), więc
         // oddajemy sterowanie między stronami — inaczej okno wygląda na zawieszone.
         await new Promise((resolve) => setTimeout(resolve, 0));
 
-        const dataUrl = await rasterizePage(pages[index], sizes[index]);
-        if (!dataUrl) {
+        const wynik = await rasterizePage(pages[index], sizes[index]);
+        if (!wynik) {
           skipped += 1;
           continue;
         }
-        const image = { id: core.createId(), ...layout[index], dataUrl, locked: true };
+        if (index === 0) pierwszaJasna = wynik.light;
+        const image = {
+          id: core.createId(),
+          ...layout[index],
+          dataUrl: wynik.dataUrl,
+          locked: true,
+          // Oryginalny rozmiar strony — eksport odda dokument w tym formacie.
+          srcW: sizes[index].width,
+          srcH: sizes[index].height,
+        };
         try {
           if (!notebook.addImage(image)) {
             skipped += 1; // limit obrazów w notatniku
@@ -1430,13 +1523,28 @@
 
       notebook.stopCapturing();
       updateHistoryButtons();
+
+      // Biała strona na czarnym tle zostawia ciemne pasy dookoła. Przechodzimy
+      // wtedy na jasny motyw, bo to on odwraca atrament (białą kreskę na białej
+      // kartce po prostu by nie było widać) — samo przemalowanie tła zrobiłoby
+      // notatki niewidzialnymi. Motyw da się cofnąć w menu Widok.
+      let zmienionyMotyw = false;
+      if (pierwszaJasna && theme !== 'light') {
+        setTheme('light');
+        zmienionyMotyw = true;
+      }
+
       view.y = clampViewY(layout[0].y - 20);
       view.x = clampViewX(view.x, view.scale);
       render();
 
       const pominieto = skipped > 0 ? ', pominięto ' + skipped : '';
       const obciete = doc.numPages > count ? ' (z ' + doc.numPages + ')' : '';
-      flashTitle('MathNotes — wczytano ' + added + ' str.' + obciete + pominieto + ' z ' + label, 4000);
+      const motyw = zmienionyMotyw ? ', włączono jasny motyw' : '';
+      flashTitle(
+        'MathNotes — wczytano ' + added + ' str.' + obciete + pominieto + motyw + ' z ' + label,
+        4500,
+      );
     } catch (err) {
       flashTitle('MathNotes — nie udało się wczytać PDF-a', 3500);
     }
@@ -1598,8 +1706,14 @@
     return !overlay.classList.contains('modal-hidden');
   }
 
+  /**
+   * Szukamy po klasie `.modal`, a nie po końcówce id. Wcześniej brane było
+   * wszystko, czego id kończy się na „-overlay" — i wystarczyło dodać nakładkę
+   * z listą osób (`#people-overlay`, bez klasy `modal-hidden`), żeby funkcja
+   * zawsze zwracała true i wszystkie skróty jednoklawiszowe przestały działać.
+   */
   function anyModalOpen() {
-    for (const overlay of document.querySelectorAll('[id$="-overlay"]')) {
+    for (const overlay of document.querySelectorAll('.modal')) {
       if (isOpen(overlay)) return true;
     }
     return false;
@@ -1934,6 +2048,7 @@
     // Kursor pióra zależy od powiększenia, więc musi się przerysować razem z nim.
     if (tool === 'pen') canvas.style.cursor = defaultCursor();
     zoomIndicator.textContent = Math.round(zoomLevel() * 100) + '%';
+    if (openFlyoutEl === $('zoom-flyout')) syncZoomSlider();
   }
 
   function resetZoom() {
@@ -1944,7 +2059,45 @@
     render();
   }
 
-  zoomIndicator.addEventListener('click', resetZoom);
+  // Krótkie kliknięcie = suwak z dokładnym powiększeniem, przytrzymanie = powrót
+  // do 100 %. Ten sam wzorzec, co przy narzędziach: akcja pod klikiem, warianty
+  // pod przytrzymaniem.
+  const zoomFlyout = $('zoom-flyout');
+  const zoomSlider = $('zoom-slider');
+  const zoomSliderValue = $('zoom-slider-value');
+
+  zoomSlider.min = String(Math.round(MIN_ZOOM * 100));
+  zoomSlider.max = String(Math.round(MAX_ZOOM * 100));
+
+  function syncZoomSlider() {
+    const procent = Math.round(zoomLevel() * 100);
+    zoomSlider.value = String(core.clamp(procent, MIN_ZOOM * 100, MAX_ZOOM * 100));
+    zoomSliderValue.textContent = procent + '%';
+  }
+
+  /** Powiększenie ustawiane suwakiem trzyma środek ekranu w miejscu. */
+  function setZoomPercent(procent) {
+    const target = clampScale(fitScale() * (procent / 100));
+    if (target === view.scale) return;
+    const before = screenToWorld(viewW / 2, viewH / 2);
+    view.scale = target;
+    const after = screenToWorld(viewW / 2, viewH / 2);
+    view.x = clampViewX(view.x + before.x - after.x, view.scale);
+    view.y = clampViewY(view.y + before.y - after.y);
+    scheduleResharpen();
+    updateZoomIndicator();
+    scheduleRender();
+  }
+
+  zoomSlider.addEventListener('input', () => {
+    setZoomPercent(Number(zoomSlider.value));
+    zoomSliderValue.textContent = Math.round(zoomLevel() * 100) + '%';
+  });
+
+  attachHold(zoomIndicator, resetZoom, () => {
+    syncZoomSlider();
+    showFlyout(zoomFlyout, zoomIndicator);
+  });
 
   // --- motyw ---------------------------------------------------------------
 
@@ -2178,7 +2331,7 @@
         event.preventDefault();
         return;
       }
-      for (const overlay of document.querySelectorAll('[id$="-overlay"]')) {
+      for (const overlay of document.querySelectorAll('.modal')) {
         if (isOpen(overlay) && overlay !== modalOverlay) {
           closeModal(overlay);
           event.preventDefault();
@@ -2283,7 +2436,7 @@
     live.timer = setTimeout(() => {
       liveStrokes.delete(map);
       const entry = entryFor(map);
-      if (entry) invalidateTiles(entry.bounds);
+      if (entry) paintStrokeIntoTiles(entry.stroke, entry.bounds);
       scheduleRender();
     }, LIVE_STROKE_QUIET_MS);
     liveStrokes.set(map, live);
@@ -2502,11 +2655,100 @@
   // Eksport do PDF
   // ==========================================================================
 
+  /** Strony wczytanego PDF-a, po kolei, razem z ich oryginalnym rozmiarem. */
+  function pdfBackgroundPages() {
+    const strony = [];
+    eachImage((image) => {
+      if (image.locked) strony.push(image);
+    });
+    strony.sort((a, b) => a.y - b.y);
+    return strony;
+  }
+
+  /**
+   * Eksport notatnika zbudowanego na wczytanym PDF-ie: jedna strona wyjściowa
+   * na jedną stronę źródłową, w jej oryginalnym rozmiarze i bez marginesów pola
+   * roboczego. Wychodzi dokument, który wygląda jak oryginał z dopiskami, a nie
+   * jak zrzut ekranu kartki.
+   *
+   * Uwaga: notatki zrobione w pasach OBOK strony wypadają poza kadr. Tak ma być
+   * — użytkownik prosił o sam PDF z rysunkami na nim.
+   */
+  async function exportPdfOverPages(strony) {
+    // 3 piksele na punkt to ok. 216 dpi: tekst źródła zostaje ostry, a plik
+    // nie puchnie tak, jak przy rastrze 1:1 z zapisanej strony (2400 px).
+    const RASTER = 3;
+    const pierwsza = strony[0];
+    const rozmiar = (image) => {
+      if (image.srcW && image.srcH) return { w: image.srcW, h: image.srcH };
+      // Plik sprzed wersji 6: oryginału nie znamy, więc bierzemy A4 i proporcje.
+      const w = 595.28;
+      return { w, h: w * (image.h / image.w) };
+    };
+
+    const pierwszyRozmiar = rozmiar(pierwsza);
+    const pdf = new window.jspdf.jsPDF({
+      unit: 'pt',
+      format: [pierwszyRozmiar.w, pierwszyRozmiar.h],
+      orientation: pierwszyRozmiar.w > pierwszyRozmiar.h ? 'landscape' : 'portrait',
+    });
+
+    const ile = Math.min(strony.length, PDF_MAX_PAGES);
+    for (let i = 0; i < ile; i++) {
+      const strona = strony[i];
+      const { w: ptW, h: ptH } = rozmiar(strona);
+
+      const off = document.createElement('canvas');
+      off.width = Math.max(1, Math.round(ptW * RASTER));
+      off.height = Math.max(1, Math.round(ptH * RASTER));
+      const offCtx = off.getContext('2d');
+      offCtx.fillStyle = '#ffffff';
+      offCtx.fillRect(0, 0, off.width, off.height);
+
+      // Układ świata → piksele arkusza: kadr to dokładnie prostokąt strony.
+      const k = (ptW * RASTER) / strona.w;
+      offCtx.setTransform(k, 0, 0, k, -strona.x * k, -strona.y * k);
+
+      const clip = { minX: strona.x, maxX: strona.x + strona.w, minY: strona.y, maxY: strona.y + strona.h };
+      drawImagesInto(offCtx, clip, false);
+      for (const map of notebook.strokes) {
+        const entry = entryFor(map);
+        if (!entry || !core.boundsIntersect(entry.bounds, clip)) continue;
+        drawStroke(offCtx, entry.stroke, k);
+      }
+
+      if (i > 0) pdf.addPage([ptW, ptH], ptW > ptH ? 'landscape' : 'portrait');
+      // JPEG, bo to jest zdjęcie strony — PNG dawałby wielokrotnie cięższy plik.
+      pdf.addImage(off.toDataURL('image/jpeg', 0.9), 'JPEG', 0, 0, ptW, ptH);
+      document.title = 'MathNotes — eksportowanie PDF… ' + (i + 1) + '/' + ile;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    return pdf;
+  }
+
   async function exportPdf() {
     if (!window.jspdf || !window.jspdf.jsPDF) {
       window.alert('Nie udało się załadować biblioteki PDF.');
       return;
     }
+
+    // Notatnik zbudowany na wczytanym PDF-ie eksportuje się inaczej niż kartka.
+    const strony = pdfBackgroundPages();
+    if (strony.length > 0) {
+      document.title = 'MathNotes — eksportowanie PDF…';
+      try {
+        const pdf = await exportPdfOverPages(strony);
+        const suggested = (docName || 'notatnik').replace(/\.json$/i, '') + '.pdf';
+        const result = await window.api.savePdf(pdf.output('arraybuffer'), suggested);
+        if (result.canceled) refreshTitle();
+        else flashTitle('MathNotes — zapisano ' + result.name);
+      } catch (err) {
+        refreshTitle();
+        window.alert('Nie udało się wyeksportować PDF-a: ' + err.message);
+      }
+      return;
+    }
+
     const bbox = contentBBox();
     if (!bbox) {
       window.alert('Notatka jest pusta — nie ma czego eksportować.');
@@ -3165,6 +3407,16 @@
     widok: () => ({ x: Math.round(view.x), y: Math.round(view.y), zoom: Math.round(zoomLevel() * 100) }),
     dolDokumentu: () => Math.round(documentBottom()),
     kursor: () => canvas.style.cursor.length,
+    narzedzie: () => tool,
+    eksportNaPdf: async () => {
+      const strony = pdfBackgroundPages();
+      if (strony.length === 0) return null;
+      const pdf = await exportPdfOverPages(strony);
+      const bajty = new Uint8Array(pdf.output('arraybuffer'));
+      let binarne = '';
+      for (let i = 0; i < bajty.length; i++) binarne += String.fromCharCode(bajty[i]);
+      return btoa(binarne);
+    },
     bitmapy: () => [...bitmaps.entries()].map(([id, b]) => id.slice(0,6) + '=' + (b ? 'ok' : 'null')).join(','),
   };
   window.api.ready();

@@ -67,6 +67,13 @@
     <div id="page-indicator" class="hidden"></div>
   </div>
 
+  <div id="zoom-flyout" class="flyout hidden">
+    <div class="flyout-row">
+      <input id="zoom-slider" type="range" min="100" max="800" step="5" value="100" aria-label="Powiększenie">
+      <span id="zoom-slider-value">100%</span>
+    </div>
+    <div class="flyout-hint">Przytrzymaj wskaźnik, aby wrócić do 100%.</div>
+  </div>
   <div id="brush-flyout" class="flyout hidden">
     <button class="flyout-option" data-brush="pen">Zwykły</button>
     <button class="flyout-option" data-brush="soft">Miękki</button>
@@ -86,7 +93,7 @@
 
   <input type="color" id="color-picker-hidden" class="visually-hidden" />
 
-  <div id="modal-overlay" class="modal-hidden">
+  <div id="modal-overlay" class="modal modal-hidden">
     <div id="modal-box">
       <div class="modal-title">Nowa adnotacja</div>
       <input id="modal-input" type="text" placeholder="Nazwa adnotacji" autocomplete="off" />
@@ -97,7 +104,7 @@
     </div>
   </div>
 
-  <div id="annotation-list-overlay" class="modal-hidden">
+  <div id="annotation-list-overlay" class="modal modal-hidden">
     <div id="annotation-list-box">
       <div class="modal-title">Adnotacje</div>
       <ul id="annotation-list"></ul>
@@ -107,7 +114,7 @@
     </div>
   </div>
 
-  <div id="online-join-overlay" class="modal-hidden">
+  <div id="online-join-overlay" class="modal modal-hidden">
     <div id="online-join-box">
       <div class="modal-title">Sesja online</div>
       <div class="settings-hint">Wklej kod od kogoś, żeby dołączyć, albo rozpocznij własną sesję i podaj swój kod innym.</div>
@@ -131,7 +138,7 @@
     </div>
   </div>
 
-  <div id="online-share-overlay" class="modal-hidden">
+  <div id="online-share-overlay" class="modal modal-hidden">
     <div id="online-share-box">
       <div class="modal-title">Sesja online</div>
       <div id="online-share-status">Uruchamianie…</div>
@@ -149,7 +156,7 @@
     </div>
   </div>
 
-  <div id="online-settings-overlay" class="modal-hidden">
+  <div id="online-settings-overlay" class="modal modal-hidden">
     <div id="online-settings-box">
       <div class="modal-title">Ustawienia połączenia</div>
       <div class="settings-hint">Serwer sygnalizacyjny służy tylko do odnalezienia się nawzajem — treść notatnika nigdy przez niego nie przechodzi. TURN przydaje się w sieciach blokujących połączenia bezpośrednie. Te ustawienia zostają na tym komputerze i nie trafiają do pliku notatnika.</div>
@@ -168,7 +175,7 @@
     </div>
   </div>
 
-  <div id="grid-overlay" class="modal-hidden">
+  <div id="grid-overlay" class="modal modal-hidden">
     <div id="grid-box">
       <div class="modal-title">Kratka w tle</div>
       <label class="switch">
@@ -192,7 +199,7 @@
     </div>
   </div>
 
-  <div id="keymap-overlay" class="modal-hidden">
+  <div id="keymap-overlay" class="modal modal-hidden">
     <div id="keymap-box">
       <div class="modal-title">Skróty klawiszowe</div>
       <div id="keymap-list"></div>

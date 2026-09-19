@@ -984,3 +984,20 @@ body {
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
+
+/* Suwak powiększenia w flyoucie przy wskaźniku procentów. */
+.flyout-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#zoom-slider { width: 150px; }
+
+#zoom-slider-value {
+  min-width: 44px;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}

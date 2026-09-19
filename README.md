@@ -140,6 +140,24 @@ odrobinę większa paczka.
 Dodatkowo `scripts/arrange-dist.js` przerywa build, jeśli w `app.asar` brakuje
 choćby jednego pliku, do którego odwołuje się `index.html`.
 
+### Podpis paczki macOS
+
+`scripts/after-pack.js` podpisuje bundle podpisem ad-hoc (`codesign --force
+--deep --sign -`), a `arrange-dist.js` sprawdza wynik i przerywa build, gdy
+podpis jest niepoprawny albo gdy zostało tylko `Identifier=Electron`.
+
+Bez tego electron-builder zostawia bundle z samym podpisem linkera:
+`Info.plist=not bound`, a Gatekeeper mówi „code has no resources but signature
+indicates they must be present”. Na macOS 26/27 taka aplikacja **po pobraniu
+z internetu nie uruchamia się w ogóle** — system twierdzi, że jest uszkodzona,
+i prawy klik → Otwórz tego nie obchodzi, bo to nie jest pytanie o nieznanego
+dewelopera, tylko odrzucenie zepsutego podpisu.
+
+Pułapka metodologiczna, przez którą to przeszło niezauważone: testy paczki
+uruchamiały `Contents/MacOS/MathNotes` bezpośrednio, co omija LaunchServices
+i Gatekeepera. Uruchomienie pliku wykonywalnego **nie dowodzi**, że aplikacja
+da się otworzyć podwójnym kliknięciem.
+
 ### Sprawdzanie paczki
 
 ```bash
@@ -175,7 +193,7 @@ Binarnego stanu Yjs nie zapisujemy — format ma być niezależny od biblioteki.
 
 ```jsonc
 {
-  "version": 5,
+  "version": 6,
   "meta": { "title": "", "grid": { "enabled": false, "color": "#4c8dff", "opacity": 0.18 } },
   "strokes": [{
     "id": "a1",
@@ -186,7 +204,8 @@ Binarnego stanu Yjs nie zapisujemy — format ma być niezależny od biblioteki.
     "pressureEnabled": false,
     "pts": [10, 20, 0.5]       // płasko [x, y, nacisk, ...], 0,1 px i 0,01 nacisku
   }],
-  // locked = strona wczytanego PDF-a: nie da się jej zaznaczyć ani przesunąć
+  // locked = strona wczytanego PDF-a: nie da się jej zaznaczyć, przesunąć ani skasować
+  // srcW/srcH = oryginalny rozmiar strony w punktach, tylko dla stron PDF-a
   "images": [{ "id": "i1", "x": 0, "y": 0, "w": 100, "h": 50, "locked": false, "dataUrl": "data:image/…" }],
   "annotations": [{ "id": "n1", "y": 420, "label": "Rozdział 1" }]
 }
@@ -246,7 +265,12 @@ inny, a to twój egzemplarz zostanie zapisany.
 Pole robocze ma stałą szerokość `PAGE_WIDTH` (2400) i przewija się w dół.
 
 **100 % to szerokość pola roboczego dopasowana do okna i zarazem maksymalne
-oddalenie.** Przybliżyć można do 800 %. Zasada jest taka: *wszystko, co widać, da
+oddalenie.** Przybliżyć można do 800 %. Krok kółka to `ZOOM_WHEEL_RATE`: przy
+0,01 jedno kliknięcie dawało mnożnik około 3×, czyli skok ze 100 % na 800 %
+w trzy ruchy i brak możliwości ustawienia czegokolwiek pomiędzy. Przy 0,002
+kliknięcie to ~1,27 %, a drobne zdarzenia z gładzika dają płynne ~1,02×.
+Krótkie kliknięcie we wskaźnik procentów otwiera suwak, przytrzymanie wraca
+do 100 %. Zasada jest taka: *wszystko, co widać, da
 się zapisać*. Dlatego `PAGE_PAN_MARGIN` wynosi zero i nie ma żadnego pasa obok
 kartki — wcześniej taki pas był, a pióro przyciśnięte na nim dostawało punkt
 dociśnięty do krawędzi, więc kreska powstawała gdzie indziej niż pióro. Wyglądało
@@ -292,6 +316,23 @@ a że grubość jest w jednostkach świata, zależy też od powiększenia i prze
 się razem z nim. Stała kropka kłamała: przy grubości 30 i przybliżeniu 400 % ślad
 był kilkanaście razy szerszy od kursora. Kursor gumki działa tak samo, tyle że
 promień kasowania jest stały w pikselach ekranu, więc nie zależy od powiększenia.
+
+### Kafle a powiększenie
+
+Każdy kafel pamięta skalę, w której powstał (`tile.scale`), i rysuje się według
+niej. Dzięki temu kafel zbudowany przy innym powiększeniu nadal trafia we
+właściwe miejsce, tylko jest mniej ostry — a to jest warunek płynnego zoomu.
+Wcześniej `zoomAt` robił `tiles.clear()`, czyli przy **każdym** kliknięciu kółka
+przerysowywał wszystkie kreski i wszystkie strony PDF-a od zera. Teraz kafle są
+odświeżane dopiero po `TILE_RESHARPEN_MS` od ostatniego ruchu kółkiem i tylko
+wtedy, gdy skala naprawdę się rozjechała.
+
+Dopisanie gotowej kreski **nie unieważnia kafla**, tylko dorysowuje ją do niego
+(`paintStrokeIntoTiles`). Wcześniej koszt zakończenia jednej kreski rósł razem
+z zawartością kartki, bo kafel odtwarzał się w całości: wszystkie obrazy (strona
+PDF-a to kilkanaście megapikseli) i wszystkie kreski, które go dotykają. Przy
+gęstej stronie z PDF-em w tle było to czuć. Kasowanie, cofanie i przesuwanie
+nadal unieważniają kafel — tam trzeba zdjąć piksele, a nie dołożyć.
 
 Gotowe kreski trzymane są w kafelkach po `TILE_HEIGHT` pikseli świata;
 przerysowywane są tylko kafle widoczne i zmienione, a kreski odrzucane po
@@ -362,6 +403,25 @@ nigdy niczego nie przykrywa, a `Ctrl+Z` cofa go w całości.
 | `PDF_RENDER_WIDTH` | 2400 px | Strona ma 1600 jednostek, więc zostaje ostra mniej więcej do 150 % powiększenia. Wyżej rośnie już tylko waga pliku. |
 | `MAX_PDF_PAGES` | 100 | Każda strona to osobny obraz w pliku notatnika. |
 | Format rastra | JPEG 0,85 | Strona to zdjęcie tekstu; PNG byłby kilka razy cięższy bez widocznej różnicy. Przy przekroczeniu 5 MB na obraz schodzimy do 0,65 i 0,45. |
+
+### Eksport notatnika zbudowanego na PDF-ie
+
+Gdy w notatniku są strony PDF-a, `Eksportuj do PDF…` nie robi zrzutu kartki
+w A4, tylko **jedną stronę wyjściową na jedną stronę źródłową, w jej oryginalnym
+rozmiarze** (`srcW`/`srcH` w punktach, zapisane przy imporcie) i bez marginesów
+pola roboczego. Wychodzi dokument wyglądający jak oryginał z dopiskami.
+
+Świadomy skutek: notatki zrobione w pasach **obok** strony wypadają poza kadr.
+Tak było w zamówieniu — „sam PDF z rysunkami bezpośrednio na nim”. Pliki sprzed
+wersji 6 nie mają `srcW`/`srcH`; tam eksport zakłada A4 i proporcje obrazu.
+
+### Tło kartki pod jasnym PDF-em
+
+Przy imporcie próbkujemy cztery rogi pierwszej strony (środek prawie zawsze jest
+zadrukowany). Jeśli tło jest jasne, a motyw był ciemny, **włączamy jasny motyw**
+— a nie tylko przemalowujemy tło. Powód: `themeInk` odwraca skrajne szarości
+według motywu, więc biała kartka przy ciemnym motywie oznaczałaby białą kreskę
+na białym tle, czyli notatki zniknęłyby z oczu. Motyw da się cofnąć w menu Widok.
 
 pdf.js (1,5 MB) **nie jest ładowany na starcie** — wchodzi dynamicznym
 `<script>` dopiero przy pierwszym imporcie. Dlatego `scripts/arrange-dist.js`

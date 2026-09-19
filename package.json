@@ -86,6 +86,7 @@
     "portable": {
       "artifactName": "MathNotes-${version}-win-x64.exe",
       "unpackDirName": "MathNotes"
-    }
+    },
+    "afterPack": "scripts/after-pack.js"
   }
 }

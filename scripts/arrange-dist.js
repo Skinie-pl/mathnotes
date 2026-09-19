@@ -9,7 +9,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
@@ -101,6 +101,27 @@ function verifyPackage(appDir, label) {
   return referenced.length + required.length;
 }
 
+/**
+ * Podpis bundle'a macOS. Bez tego electron-builder wypuszcza paczkę z samym
+ * podpisem linkera, a pobrana aplikacja nie uruchamia się wcale („uszkodzona").
+ * Sprawdzamy tu, a nie dopiero u użytkownika.
+ */
+function verifySignature(appPath, label) {
+  try {
+    execFileSync('codesign', ['--verify', '--deep', '--strict', appPath], { stdio: 'pipe' });
+  } catch (err) {
+    throw new Error(label + ': podpis bundle\'a jest niepoprawny — ' + String(err.stderr || err.message).trim());
+  }
+  // codesign -dv pisze opis na stderr, nie na stdout.
+  const opis = spawnSync('codesign', ['-dv', appPath], { encoding: 'utf8' }).stderr || '';
+  if (/linker-signed/.test(opis)) {
+    throw new Error(label + ': bundle ma tylko podpis linkera — afterPack nie zadziałał.');
+  }
+  if (/Identifier=Electron\b/.test(opis)) {
+    throw new Error(label + ': bundle podpisany jako „Electron" — podpis nie obejmuje aplikacji.');
+  }
+}
+
 function zipFolder(folder) {
   const archive = folder + '.zip';
   rmrf(archive);
@@ -136,6 +157,7 @@ for (const item of LAYOUT) {
       ? path.join(from, 'MathNotes.app', 'Contents', 'Resources')
       : path.join(from, 'resources');
   const checked = verifyPackage(resources, item.to);
+  if (item.from.startsWith('mac')) verifySignature(path.join(from, 'MathNotes.app'), item.to);
 
   const to = path.join(DIST, item.to);
   rmrf(to);
